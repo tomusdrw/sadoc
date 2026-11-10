@@ -21,6 +21,7 @@ REMINDER_REVIEW = "reminder_review"
 REMINDER_MERGE = "reminder_merge"
 BLOCKED = "blocked"
 AUTO_MERGED = "auto_merged"
+MERGED = "merged"
 NIGHTLY_SUMMARY = "nightly_summary"
 
 # Kinds that are worth waking up for, versus a daily digest.
@@ -224,6 +225,24 @@ def auto_merged(repo: str, number: int, url: str, tier: str) -> Alert:
         repo=repo,
         pr_number=number,
         dedupe_key=f"{AUTO_MERGED}:{repo}#{number}",
+    )
+
+
+def merged_by_human(repo: str, number: int, url: str, tier: str) -> Alert:
+    """The pull request was merged by somebody else, not by the bot."""
+    text, hbody = _body(
+        "Pull request was merged",
+        [("Repository", repo), ("Pull request", f"#{number} {url}"), ("Tier", tier)],
+        "This one was merged outside the bot.",
+    )
+    return Alert(
+        MERGED,
+        f"[deps-bot] Merged: {repo}#{number}",
+        text,
+        html=hbody,
+        repo=repo,
+        pr_number=number,
+        dedupe_key=f"{MERGED}:{repo}#{number}",
     )
 
 

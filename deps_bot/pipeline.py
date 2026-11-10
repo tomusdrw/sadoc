@@ -976,7 +976,7 @@ class Worker:
             self.state.record_pr(repo, number, state=new_state, updated_at=time.time())
             self.state.log(f"PR is {pr_state.lower()}", repo=repo)
             if new_state == "merged" and not row_get(repo_row, "auto_merged"):
-                self.notify(alerts.auto_merged(repo, number, view.get("url") or "", tier))
+                self.notify(alerts.merged_by_human(repo, number, view.get("url") or "", tier))
             return f"PR is {pr_state.lower()}"
 
         checks = self.gh.pr_checks(owner, name, number)
