@@ -280,8 +280,12 @@ def main() -> int:
     p_run = sub.add_parser("run", help="run the pipeline")
     p_run.add_argument("--repo", default=None)
     p_run.add_argument("--max-prs", type=int, default=None)
-    p_run.add_argument("--deadline", type=float, default=None,
-                       help="epoch seconds after which no new repository is started")
+    p_run.add_argument(
+        "--deadline",
+        type=float,
+        default=None,
+        help="epoch seconds after which no new repository is started",
+    )
     p_run.add_argument("--json", action="store_true")
     p_run.set_defaults(func=cmd_run)
 

@@ -26,9 +26,9 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 run() {
   log ">>> $*"
   "$@" 2>&1 | tee -a "$LOG"
-  local rc=${PIPESTATUS[0]}
+  local rc="${PIPESTATUS[0]}"
   log "<<< exit $rc"
-  return $rc
+  return "$rc"
 }
 
 # Window helpers -----------------------------------------------------------
