@@ -364,12 +364,15 @@ class Worker:
         if skipped and skipped.lower() not in ("none", "n/a", "-"):
             extra = f"Skipped: {skipped}."
             note = f"{note} {extra}".strip()
+        original = note
         note = sanitize.scrub_text(note)
-        # If anything leaky survived the scrub, publish nothing rather than
-        # something garbled.
+        # If the note had to be changed to remove a marker, the prose is now
+        # suspect - publish nothing rather than something mangled.
+        if note != original:
+            return ""
         if sanitize.contains_leak(note):
             return ""
-        # Drop the note entirely if scrubbing left nothing meaningful.
+        # Drop the note entirely if it says nothing worth saying.
         if len(note) < 8:
             return ""
         return note
@@ -517,8 +520,16 @@ class Worker:
                         WORK=sanitize.scrub_text(bump.text)[:4000],
                     )
                     note_result = session.prompt(note_prompt, timeout=900)
-                    candidate = sanitize.scrub_text(note_result.text.strip())
+                    raw_note = note_result.text.strip()
+                    candidate = sanitize.scrub_text(raw_note)
                     if candidate.upper().startswith("NONE"):
+                        candidate = ""
+                    # If the note needed scrubbing, or a marker survived it,
+                    # publish nothing rather than something mangled.
+                    if candidate != raw_note or sanitize.contains_leak(candidate):
+                        self.log(
+                            "dropping the note: it mentions the tooling", repo=f"{owner}/{repo}"
+                        )
                         candidate = ""
                     if len(candidate) > 20:
                         public_note = candidate
