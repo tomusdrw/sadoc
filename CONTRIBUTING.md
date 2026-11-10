@@ -5,7 +5,7 @@ Thanks for considering a contribution.
 ## Getting set up
 
 ```bash
-git clone https://github.com/OWNER/deps-bot.git
+git clone https://github.com/tomusdrw/deps-bot.git
 cd deps-bot
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'

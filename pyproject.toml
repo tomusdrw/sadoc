@@ -34,8 +34,8 @@ dev = [
 deps-bot = "deps_bot.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/OWNER/deps-bot"
-Issues = "https://github.com/OWNER/deps-bot/issues"
+Homepage = "https://github.com/tomusdrw/deps-bot"
+Issues = "https://github.com/tomusdrw/deps-bot/issues"
 
 [tool.setuptools]
 packages = ["deps_bot"]

@@ -1,5 +1,8 @@
 # deps-bot
 
+[![CI](https://github.com/tomusdrw/deps-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/tomusdrw/deps-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A nightly dependency-update agent for your own GitHub repositories.
 
 It finds outdated dependencies, opens a pull request for each one, fixes whatever
@@ -57,7 +60,7 @@ Supported ecosystems: **npm**, **pnpm**, **yarn**, **Cargo**, **pip/poetry/uv**,
 ## Install
 
 ```bash
-git clone https://github.com/OWNER/deps-bot.git ~/.local/share/deps-bot
+git clone https://github.com/tomusdrw/deps-bot.git ~/.local/share/deps-bot
 mkdir -p ~/.config/deps-bot
 cp ~/.local/share/deps-bot/config.example.toml ~/.config/deps-bot/config.toml
 $EDITOR ~/.config/deps-bot/config.toml
