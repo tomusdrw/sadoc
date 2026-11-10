@@ -150,3 +150,55 @@ def test_alert_body_has_no_internal_detail():
     assert "agent" not in alert.text.lower()
     assert "deps-bot" not in alert.text.lower()
     assert alert.dedupe_key
+
+
+def test_notify_accepts_a_logger_with_the_standard_signature():
+    """The worker calls log(message, repo=..., level=..., data=...)."""
+    from deps_bot.pipeline import Worker
+
+    calls = []
+
+    def log(message, repo=None, level="info", data=None):
+        calls.append((message, repo, level))
+
+    worker = Worker.__new__(Worker)
+    worker.log = log
+    worker.notifier = notify.Notifier(notify.ConsoleBackend(), state=None, to=["a@b.c"])
+    status = worker.notify(alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, []))
+    assert status == "sent"
+    assert calls and calls[0][1] == "owner/repo"
+
+
+def test_notify_survives_a_broken_logger():
+    """A logging failure must never abort the pipeline."""
+    from deps_bot.pipeline import Worker
+
+    def broken_log(*args, **kwargs):
+        raise RuntimeError("logger exploded")
+
+    worker = Worker.__new__(Worker)
+    worker.log = broken_log
+    worker.notifier = notify.Notifier(notify.ConsoleBackend(), state=None, to=["a@b.c"])
+    assert worker.notify(alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, [])) == "sent"
+
+
+def test_notify_survives_a_logger_with_the_wrong_signature():
+    from deps_bot.pipeline import Worker
+
+    worker = Worker.__new__(Worker)
+    worker.log = lambda message: None  # no keyword arguments at all
+    worker.notifier = notify.Notifier(notify.ConsoleBackend(), state=None, to=["a@b.c"])
+    assert worker.notify(alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, [])) == "sent"
+
+
+def test_notify_returns_failed_when_the_backend_fails():
+    from deps_bot.pipeline import Worker
+
+    class BrokenBackend(notify.Backend):
+        def send(self, message):
+            raise notify.NotifyError("nope")
+
+    worker = Worker.__new__(Worker)
+    worker.log = lambda *a, **k: None
+    worker.notifier = notify.Notifier(BrokenBackend(), state=None, to=["a@b.c"])
+    assert worker.notify(alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, [])) == "failed"

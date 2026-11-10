@@ -31,7 +31,7 @@ PR_TITLES = {
     TIER_C: "fix(deps): update {n} vulnerable dependencies",
 }
 
-PR_LABELS = {TIER_A: "dependencies", TIER_B: "dependencies", TIER_C: "dependencies"}
+PR_LABELS = {TIER_A: ["dependencies"], TIER_B: ["dependencies"], TIER_C: ["dependencies"]}
 
 
 @dataclass
@@ -186,11 +186,11 @@ def load_prompt(name: str, **kwargs) -> str:
 
 # ------------------------------------------------------------------- worker
 class Worker:
-    def __init__(self, cfg, gh, state, log=print, notifier=None):
+    def __init__(self, cfg, gh, state, log=None, notifier=None):
         self.cfg = cfg
         self.gh = gh
         self.state = state
-        self.log = log
+        self.log = log or _default_log
         self.notifier = notifier
         self.adv_cache = advisories.AdvisoryCache(gh)
 
@@ -201,17 +201,37 @@ class Worker:
         return [n for n in names if n]
 
     def notify(self, alert) -> str:
-        """Send an alert, if notifications are enabled."""
+        """Send an alert, if notifications are enabled.
+
+        Never raises: a notification problem must not abort the pipeline.
+        """
         if not self.notifier:
             return "disabled"
         try:
             status = self.notifier.send(alert)
-            if status == "sent":
-                self.log(f"notified: {alert.subject}", repo=alert.repo)
-            return status
         except Exception as exc:  # noqa: BLE001
-            self.log(f"notification failed: {exc}", repo=alert.repo, level="error")
+            self._safe_log(f"notification failed: {exc}", repo=alert.repo, level="error")
             return "failed"
+        if status == "sent":
+            self._safe_log(f"notified: {alert.subject}", repo=alert.repo)
+        elif status == "failed":
+            self._safe_log(f"notification failed: {alert.subject}", repo=alert.repo, level="error")
+        return status
+
+    def _safe_log(
+        self, message: str, repo: str | None = None, level: str = "info", data: dict | None = None
+    ) -> None:
+        """Log without ever raising - a logger must not break the run."""
+        try:
+            self.log(message, repo=repo, level=level, data=data)
+        except TypeError:
+            # A logger with a different signature.
+            try:
+                self.log(message)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------- detect
     def detect_repo(self, owner: str, repo: str, branch: str) -> list[Update]:
@@ -342,6 +362,33 @@ class Worker:
         return f"deps/{package}"
 
     # ---------------------------------------------------------- leak check
+    def _apply_labels(self, owner: str, repo: str, number: int, tier: str) -> None:
+        """Label the pull request so it can be filtered on GitHub."""
+        if not number:
+            return
+        labels = list(PR_LABELS.get(tier, []))
+        if tier == TIER_C:
+            labels.append("security")
+        for label in labels:
+            try:
+                self.gh.create_label(
+                    owner,
+                    repo,
+                    label,
+                    "b60205" if label == "security" else "ededed",
+                    "Automated dependency update"
+                    if label != "security"
+                    else "Addresses a published security advisory",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.gh.add_labels(owner, repo, number, labels)
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log(
+                f"could not label the pull request: {exc}", repo=f"{owner}/{repo}", level="error"
+            )
+
     def _public_note(self, report: str) -> str:
         """Turn the agent's internal report into a short, human-facing note.
 
@@ -575,6 +622,7 @@ class Worker:
                     verify_output=output[-20000:],
                     transcript=json.dumps(session.transcript[-200:])[-40000:],
                 )
+                self._apply_labels(owner, repo, number, tier)
                 self.state.log(f"opened PR {url} (ref {ref_id})", repo=f"{owner}/{repo}")
                 self.state.end_attempt(attempt_id, "pr_opened", url)
 
@@ -1073,6 +1121,16 @@ def _age_hours(created_at: str) -> float:
         return max(0.0, (datetime.now(UTC) - stamp).total_seconds() / 3600)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _default_log(
+    message: str, repo: str | None = None, level: str = "info", data: dict | None = None
+) -> None:
+    """Fallback logger with the same signature as the CLI's."""
+    prefix = f"[{level}]" if level != "info" else ""
+    if repo:
+        prefix = f"{prefix} ({repo})".strip()
+    print(f"{prefix} {message}".strip(), flush=True)
 
 
 def _make_ref_id() -> str:

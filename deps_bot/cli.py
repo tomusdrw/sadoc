@@ -29,8 +29,13 @@ from deps_bot.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from deps_bot.state import State  # noqa: E402
 
 
-def _log(msg: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+def _log(msg: str, repo: str | None = None, level: str = "info", data: dict | None = None) -> None:
+    prefix = f"[{time.strftime('%H:%M:%S')}]"
+    if repo:
+        prefix += f" ({repo})"
+    if level not in ("info",):
+        prefix += f" [{level}]"
+    print(f"{prefix} {msg}", flush=True)
 
 
 def _make_notifier(cfg, state, dry_run: bool):
