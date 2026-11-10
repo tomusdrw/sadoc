@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the deps-bot dependency update agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/deps-bot/bin/deps-bot-nightly
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=PI_CODING_AGENT_DIR=%h/.cache/deps-bot/pi-agent
+EnvironmentFile=-%h/.config/deps-bot/secrets.env
+TimeoutStartSec=infinity
+Nice=10

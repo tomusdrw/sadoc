@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deps-bot"
+version = "1.0.0"
+description = "A nightly dependency-update agent for your own GitHub repositories"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["dependencies", "github", "automation", "llm", "renovate", "dependabot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+# No runtime dependencies: the standard library only. `pi`, `gh` and `bwrap`
+# are external tools, not Python packages.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+deps-bot = "deps_bot.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/OWNER/deps-bot"
+Issues = "https://github.com/OWNER/deps-bot/issues"
+
+[tool.setuptools]
+packages = ["deps_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",
+    "SIM105",
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]

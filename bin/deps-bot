@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Entry point for deps-bot.
+#
+# The real implementation lives in the deps_bot package; this wrapper exists so
+# the tool can be run straight from a checkout without installing anything.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$HERE")"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+exec "${PYTHON:-python3}" -m deps_bot.cli "$@"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Send deps-bot reminders at 09:00
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+AccuracySec=5min
+Persistent=false
+Unit=deps-bot-remind.service
+
+[Install]
+WantedBy=timers.target

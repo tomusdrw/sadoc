@@ -1,0 +1,131 @@
+# deps-bot configuration
+#
+# Copy to ~/.config/deps-bot/config.toml and edit:
+#
+#   mkdir -p ~/.config/deps-bot
+#   cp config.example.toml ~/.config/deps-bot/config.toml
+#
+# Secrets do NOT belong in this file. Put them in ~/.config/deps-bot/secrets.env
+# (chmod 600) and reference the environment variable name here. The systemd
+# unit loads that file; the agent sandbox scrubs those variables so the model
+# can never read them.
+
+# Which GitHub account's repositories to sweep.
+#   owners = []          -> the authenticated user (default)
+#   owners = ["myorg"]  -> also sweep an organisation
+owners = []
+# Optional: restrict to a single owner. Empty means "any owner listed above".
+owner = ""
+
+[schedule]
+# Wall-clock window for the nightly run.
+window            = "01:00-07:00"
+# Hard cap on pull requests opened per night.
+max_prs_per_night = 5
+# How many times the model may try to fix the same failure.
+max_attempts      = 3
+# 0 = bounded by max_prs_per_night
+max_repos_per_night = 0
+
+[scope]
+# Repos to include even when policy would skip them (forks, other owners).
+include = []
+# Repos to exclude by name.
+exclude = []
+# Skip forks by default. Forks are often vendored copies with hundreds of
+# manifests, so the diffs are unreviewable.
+skip_forks         = true
+# Ignore repositories that have not been touched for this long (days).
+# 0 disables the check.
+max_inactive_days  = 365
+# Only act on repositories with at least this many outdated dependencies.
+min_outdated_count = 1
+
+[merge]
+# Which tiers may merge themselves.
+#   A = patch/minor, B = major (breaking), C = security
+# Only "A" is safe to merge unattended; B and C always need a human.
+auto_merge_tier              = ["A"]
+require_checks               = true
+require_no_review_requests   = true
+require_no_unresolved_threads = true
+
+[sandbox]
+# The model needs network access to install packages while it works.
+allow_network = true
+# Remove credentials and API keys from the model's environment.
+scrub_env    = true
+
+[behaviour]
+# Attempt major version bumps (they need code changes, so they are slower
+# and riskier). Set to false to only ever do patch/minor updates.
+tier_b_major    = true
+# Open pull requests for security advisories.
+tier_c_security = true
+
+# Model ----------------------------------------------------------------------
+# Any OpenAI-compatible endpoint works. A local llama.cpp server is the usual
+# choice; a hosted provider works too.
+[model]
+provider   = "local"
+model      = "local-model"
+base_url   = "http://127.0.0.1:8080/v1"
+context    = 131072
+max_tokens = 16384
+reasoning  = true
+
+# Per-task overrides. "bump" edits manifests, "migrate" fixes breaking
+# changes, "fixci" fixes a failing CI run, "review" answers review comments.
+[models.bump]
+model    = "local-model"
+base_url = "http://127.0.0.1:8080/v1"
+
+[models.migrate]
+model    = "local-model"
+base_url = "http://127.0.0.1:8080/v1"
+
+[models.fixci]
+model    = "local-model"
+base_url = "http://127.0.0.1:8080/v1"
+
+[models.review]
+model    = "local-model"
+base_url = "http://127.0.0.1:8080/v1"
+
+# Notifications --------------------------------------------------------------
+# GitHub does not email you about activity on your own pull requests, so the
+# bot can email you instead.
+#
+#   backend = "resend" | "smtp" | "console" | "none"
+#
+# Resend:  https://resend.com/api-keys
+#   RESEND_API_KEY=re_...            (put this in secrets.env)
+#   from    must be a verified Resend domain, e.g. "deps-bot@example.com"
+#
+# SMTP: direct submission over port 587, no local mail server needed.
+#   SMTP_APP_PASSWORD=...            (put this in secrets.env)
+[notify]
+enabled = false
+backend = "resend"
+from    = "deps-bot@example.com"
+to      = ["you@example.com"]
+resend_api_key_env = "RESEND_API_KEY"
+
+# smtp_host = "smtp.gmail.com"
+# smtp_port = 587
+# smtp_user = "you@example.com"
+# smtp_password_env = "SMTP_APP_PASSWORD"
+
+# How long before a pull request gets a nudge.
+review_reminder_hours = 24
+merge_reminder_hours  = 48
+
+# Per-repository overrides ---------------------------------------------------
+# The local verification command is the gate that runs before a pull request
+# is opened. Without one, the only gate is CI.
+#
+# [repos."my-repo"]
+# verify = "npm ci --no-audit && npm run typecheck && npm test"
+#
+# [repos."other-repo"]
+# verify = "cargo test --workspace"

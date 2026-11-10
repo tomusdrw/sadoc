@@ -1,0 +1,28 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local runtime state (never commit these)
+state/
+work/
+*.db
+*.db-journal
+*.log
+
+# Local configuration and secrets
+config.toml
+secrets.env
+.env
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build artefacts
+dist/
+build/
+*.egg-info/

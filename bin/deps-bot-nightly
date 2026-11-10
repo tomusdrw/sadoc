@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Nightly runner for deps-bot.
+#
+#   1. scan   - refresh the outdated-dependency inventory
+#   2. run    - pick the highest-value repos and open PRs
+#   3. monitor - chase CI and review feedback on PRs opened earlier
+#   4. report - write a markdown digest
+#
+# The window is a hard wall-clock budget: no new repo is started when there is not
+# enough time left for it to finish.
+set -uo pipefail
+
+DEPSBOT_HOME="${DEPSBOT_HOME:-$HOME/.local/share/deps-bot}"
+DEPSBOT_BIN="$DEPSBOT_HOME/bin/deps-bot"
+CONFIG="${DEPSBOT_CONFIG:-$HOME/.config/deps-bot/config.toml}"
+LOG_DIR="${DEPSBOT_LOG_DIR:-$HOME/.local/share/deps-bot/logs}"
+REPORT_DIR="${DEPSBOT_REPORT_DIR:-$HOME/.local/share/deps-bot/reports}"
+STATE_DB="${DEPSBOT_DB:-$HOME/.local/share/deps-bot/state.db}"
+
+mkdir -p "$LOG_DIR" "$REPORT_DIR"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG="$LOG_DIR/$STAMP.log"
+
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
+
+run() {
+  log ">>> $*"
+  "$@" 2>&1 | tee -a "$LOG"
+  local rc=${PIPESTATUS[0]}
+  log "<<< exit $rc"
+  return $rc
+}
+
+# Window helpers -----------------------------------------------------------
+window_from_config() {
+  python3 - "$CONFIG" <<'PY' 2>/dev/null || echo "01:00-07:00"
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as fh:
+        cfg = tomllib.load(fh)
+    print(cfg.get("schedule", {}).get("window", "01:00-07:00"))
+except Exception:
+    print("01:00-07:00")
+PY
+}
+
+WINDOW="$(window_from_config)"
+WINDOW_START="${WINDOW%%-*}"
+WINDOW_END="${WINDOW##*-}"
+
+minutes_now() { date +%H%M | awk '{print int(substr($0,1,2))*60 + int(substr($0,2))}'; }
+to_minutes() { echo "$1" | awk -F: '{print $1*60 + $2}'; }
+
+WSTART=$(to_minutes "$WINDOW_START")
+WEND=$(to_minutes "$WINDOW_END")
+NOW=$(minutes_now)
+
+# Allow the window to wrap past midnight.
+if [ "$WEND" -le "$WSTART" ]; then WEND=$((WEND + 1440)); fi
+if [ "$NOW" -lt "$WSTART" ]; then NOW=$((NOW + 1440)); fi
+
+REMAINING=$((WEND - NOW))
+TOTAL=$((WEND - WSTART))
+log "window $WINDOW - ${REMAINING} min remaining of ${TOTAL}"
+
+# Absolute deadline (epoch seconds) after which no new repository is started.
+# A repository already in flight is allowed to finish.
+DEADLINE=$(( $(date +%s) + REMAINING * 60 ))
+
+log "=== scan ==="
+run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
+
+log "=== run ==="
+run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" || true
+
+log "=== monitor ==="
+run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" monitor || true
+
+log "=== report ==="
+REPORT="$REPORT_DIR/$STAMP.md"
+"$DEPSBOT_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" 2>&1 | tee -a "$LOG"
+log "report written to $REPORT"
