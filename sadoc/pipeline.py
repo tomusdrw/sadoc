@@ -1413,6 +1413,16 @@ class Worker:
         try:
             self.gh.pr_merge(owner, repo, number)
         except Exception as exc:  # noqa: BLE001
+            # A repository that requires signed commits, or a review, will
+            # refuse the merge. That is worth saying out loud.
+            self.notify(
+                alerts.failure(
+                    f"{owner}/{repo}",
+                    "merge",
+                    f"The pull request is green but could not be merged: {exc}"[:1500],
+                    persona=self.persona,
+                )
+            )
             return f"merge failed: {exc}"
         self.state.record_pr(
             f"{owner}/{repo}", number, state="merged", auto_merged=1, updated_at=time.time()
