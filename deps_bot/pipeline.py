@@ -945,6 +945,10 @@ class Worker:
         check list is not immediately "no CI" - we wait for them to appear
         before giving up.
 
+        Only the checks of the pull request's **current** commit are considered.
+        After a new push the previous (failed) run is still listed, and acting
+        on it would mean reading stale results.
+
         A failure does not end the wait: the other checks keep running, and the
         model can only be given complete logs once the whole run is over.
         """
@@ -952,7 +956,7 @@ class Worker:
         empty_since: float | None = None
         failed = False
         while time.time() < deadline:
-            checks = self.gh.pr_checks(owner, repo, number)
+            checks = self._current_checks(owner, repo, number)
             if not checks:
                 # No checks yet. Give them a couple of minutes to show up.
                 if empty_since is None:
@@ -973,6 +977,22 @@ class Worker:
                     return "pass"
             time.sleep(20)
         return "fail" if failed else "pending"
+
+    def _current_checks(self, owner: str, repo: str, number: int) -> list[dict]:
+        """The checks of the pull request's current head commit."""
+        try:
+            view = self.gh.pr_view(owner, repo, number)
+            sha = (view.get("headRefOid") or "") or ""
+            if not sha:
+                data = self.gh.api(f"repos/{owner}/{repo}/pulls/{number}")
+                sha = (data or {}).get("head", {}).get("sha") or ""
+            if sha:
+                checks = self.gh.pr_checks_for_commit(owner, repo, sha)
+                if checks:
+                    return checks
+        except Exception:  # noqa: BLE001
+            pass
+        return self.gh.pr_checks(owner, repo, number)
 
     def failed_ci_logs(self, owner: str, repo: str, number: int) -> str:
         """The logs of the failing checks.
@@ -1154,11 +1174,17 @@ class Worker:
             age_h = _age_hours(created)
             review_decision = view.get("reviewDecision")
 
-            checks = self.gh.pr_checks(owner, name, number)
+            checks = self._current_checks(owner, name, number)
             buckets = [c.get("bucket") for c in checks]
             ci_green = bool(checks) and all(b in ("pass", "skipping") for b in buckets)
             ci_failed = any(b in ("fail", "cancel") for b in buckets)
             mergeable = view.get("mergeable") == "MERGEABLE"
+
+            # A pull request that has gone green can merge itself.
+            if ci_green and not ci_failed:
+                outcome = self.maybe_auto_merge(owner, name, number, tier)
+                if outcome == "auto-merged":
+                    return "auto-merged"
 
             # 1. CI is red and the bot could not fix it -> needs a human now.
             if ci_failed:
@@ -1307,6 +1333,21 @@ class Worker:
             return f"ci={ci_state}"
         finally:
             session.close()
+
+    def maybe_auto_merge(self, owner: str, repo: str, number: int, tier: str) -> str:
+        """Merge a pull request if the policy allows it."""
+        ok, why = self.may_auto_merge(owner, repo, number, tier)
+        if not ok:
+            return why
+        try:
+            self.gh.pr_merge(owner, repo, number)
+        except Exception as exc:  # noqa: BLE001
+            return f"merge failed: {exc}"
+        self.state.record_pr(
+            f"{owner}/{repo}", number, state="merged", auto_merged=1, updated_at=time.time()
+        )
+        self.notify(alerts.auto_merged(f"{owner}/{repo}", number, "", tier))
+        return "auto-merged"
 
     def _resolve_threads(self, owner: str, repo: str, number: int, comments: list[dict]) -> None:
         """Mark the review threads we acted on as resolved."""

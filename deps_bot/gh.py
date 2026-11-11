@@ -216,6 +216,41 @@ class Gh:
         except json.JSONDecodeError:
             return []
 
+    def pr_checks_for_commit(self, owner: str, repo: str, sha: str) -> list[dict]:
+        """The checks that ran for one specific commit.
+
+        `gh pr checks` reports the checks of the *pull request*, which after a
+        new push still include the previous (failed) run. Reading those would
+        make the bot act on stale results.
+        """
+        data = self.api(f"repos/{owner}/{repo}/commits/{sha}/check-runs", per_page=100)
+        if not isinstance(data, dict):
+            return []
+        out = []
+        for run in data.get("check_runs", []):
+            conclusion = (run.get("conclusion") or "").lower()
+            status = (run.get("status") or "").lower()
+            if conclusion == "success":
+                bucket = "pass"
+            elif conclusion == "failure":
+                bucket = "fail"
+            elif conclusion == "cancelled":
+                bucket = "cancel"
+            elif conclusion in ("skipped", "neutral"):
+                bucket = "skipping"
+            else:
+                bucket = "pending"
+            out.append(
+                {
+                    "name": run.get("name"),
+                    "bucket": bucket,
+                    "link": run.get("details_url"),
+                    "workflow": (run.get("app") or {}).get("slug"),
+                    "state": conclusion or status,
+                }
+            )
+        return out
+
     def pr_checks_watch(
         self, owner: str, repo: str, number: int, interval: int = 20, fail_fast: bool = True
     ) -> tuple[int, str]:
