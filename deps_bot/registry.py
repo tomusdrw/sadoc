@@ -167,29 +167,82 @@ def action_latest(action: str, gh=None) -> str | None:
 
 
 # ------------------------------------------------------------------ docker
-def docker_latest(image: str) -> str | None:
-    """Latest tag for a Docker Hub image (best effort, no auth)."""
-    cached = _cache_get("docker", image)
-    if cached is not None:
-        return cached
+_TAG_RE = re.compile(
+    r"^v?(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?"
+    r"(?P<suffix>[-.+].*)?$"
+)
+
+
+def _tag_parts(tag: str):
+    """(major, minor, patch) for a numeric tag, or None."""
+    match = _TAG_RE.match(tag.strip())
+    if not match:
+        return None
+    return (
+        int(match.group("major")),
+        int(match.group("minor") or 0),
+        int(match.group("patch") or 0),
+    )
+
+
+def docker_latest(image: str, current_tag: str | None = None) -> str | None:
+    """Latest tag for a Docker Hub image (best effort, no auth).
+
+    Docker tags are ambiguous: "latest" may be a date, a distro suffix, or a
+    completely different product line. The rule here is deliberately narrow -
+    only a tag from **the same version series** is offered, so "3.21" becomes
+    "3.21.10" and "20-bullseye-slim" becomes "20.20-bullseye-slim". A jump to a
+    different minor or major is a decision, not an update, so it is left to a
+    human.
+    """
+    if not current_tag:
+        return None
+    match = _TAG_RE.match(current_tag.strip())
+    if not match:
+        return None
+    major = match.group("major")
+    minor = match.group("minor")
+    suffix = match.group("suffix") or ""
+    series = f"{major}.{minor}" if minor else major
+    current_parts = _tag_parts(current_tag)
+
     repo = image if "/" in image else f"library/{image}"
+    # The registry's name filter matches the whole tag, so the suffix has to be
+    # part of the query: "20-bullseye-slim" finds the bullseye variants only.
     try:
         raw = _fetch(
-            f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=25&ordering=last_updated"
+            f"https://hub.docker.com/v2/repositories/{repo}/tags"
+            f"?page_size=100&name={series}{suffix}"
         )
         data = json.loads(raw)
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
         return None
+
     best = None
+    best_key = None
     for entry in data.get("results") or []:
         tag = entry.get("name")
         if not tag or tag in _SKIP_LATEST_TAGS:
             continue
-        if re.fullmatch(r"\d+(\.\d+)*", tag) or re.fullmatch(r"v?\d+(\.\d+)*", tag):
-            best = tag
-            break
-    if best:
-        _cache_put("docker", image, best)
+        candidate = _TAG_RE.match(tag.strip())
+        if not candidate:
+            continue
+        # The same suffix: a different base distribution is not an update.
+        if (candidate.group("suffix") or "") != suffix:
+            continue
+        # The same series.
+        if candidate.group("major") != major:
+            continue
+        if minor and candidate.group("minor") != minor:
+            continue
+        parts = _tag_parts(tag)
+        if parts is None or current_parts is None:
+            continue
+        # Strictly newer - never propose a downgrade.
+        if parts <= current_parts:
+            continue
+        if best_key is None or parts > best_key:
+            best, best_key = tag, parts
     return best
 
 
@@ -226,5 +279,5 @@ def latest_for(dep, gh=None) -> str | None:
     if eco == "action":
         return action_latest(dep.name, gh=gh)
     if eco == "docker":
-        return docker_latest(dep.name)
+        return docker_latest(dep.name, dep.current)
     return None

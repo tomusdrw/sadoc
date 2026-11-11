@@ -114,6 +114,13 @@ class PiSession:
         env["DEPSBOT_WORKSPACE"] = self.cwd
         env["DEPSBOT_REAL_HOME"] = str(Path.home())
         env["DEPSBOT_ALLOW_NET"] = "1" if self._allow_network else "0"
+        # A persistent cache for the package managers, so a run does not
+        # re-download the whole registry.
+        cache_dir = Path(
+            os.environ.get("DEPSBOT_CACHE_DIR", Path.home() / ".cache" / "deps-bot" / "toolcache")
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env["DEPSBOT_CACHE_DIR"] = str(cache_dir)
         return env
 
     def _write_models_json(self) -> None:

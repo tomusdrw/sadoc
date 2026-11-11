@@ -19,6 +19,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const WORKSPACE = process.env.DEPSBOT_WORKSPACE || process.cwd();
 const ALLOW_NET = process.env.DEPSBOT_ALLOW_NET === "1";
+// A persistent, writable directory for the package managers' caches. Without
+// it every run re-downloads the whole registry, which is slow and flaky.
+const TOOL_CACHE = process.env.DEPSBOT_CACHE_DIR || "/tmp/depsbot-toolcache";
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
 const FORBIDDEN: Array<[RegExp, string]> = [
@@ -48,6 +51,7 @@ function q(s: string): string {
 /** Build the bubblewrap argv for a single command. */
 export function buildSandbox(command: string, cwd: string): string {
 	const scratch = "/tmp/depsbot-scratch";
+	const cache = TOOL_CACHE;
 	const realHome = process.env.DEPSBOT_REAL_HOME || "/root";
 	// NOTE: /bin/sh is bash in POSIX mode on this box, where sourcing a missing
 	// file aborts the whole script. Use bash explicitly and guard every source.
@@ -57,10 +61,16 @@ export function buildSandbox(command: string, cwd: string): string {
 		`[ -r ${q(realHome)}/.profile ] && . ${q(realHome)}/.profile`,
 		`export HOME=${q(scratch)}`,
 		`export XDG_CACHE_HOME=${q(scratch)}/.cache`,
-		`export CARGO_HOME=${q(scratch)}/.cargo`,
-		`export npm_config_cache=${q(scratch)}/.npm`,
-		`export GOCACHE=${q(scratch)}/.cache/go-build`,
-		`export GOPATH=${q(scratch)}/go`,
+		// The package managers' caches live in the persistent cache directory,
+		// not in the scratch tmpfs, so a run does not re-download the registry.
+		`export CARGO_HOME=${q(cache)}/cargo`,
+		`export npm_config_cache=${q(cache)}/npm`,
+		`export GOCACHE=${q(cache)}/go-build`,
+		`export GOPATH=${q(cache)}/go`,
+		`export GOMODCACHE=${q(cache)}/go/pkg/mod`,
+		`export PIP_CACHE_DIR=${q(cache)}/pip`,
+		`export UV_CACHE_DIR=${q(cache)}/uv`,
+		`export BUN_INSTALL_CACHE_DIR=${q(cache)}/bun`,
 		command,
 	].join("\n");
 	const argv = [
@@ -79,7 +89,9 @@ export function buildSandbox(command: string, cwd: string): string {
 		// workspace bind has to come *after* it or it is shadowed away.
 		"--tmpfs /tmp",
 		`--dir ${q(scratch)}`,
+		`--dir ${q(cache)}`,
 		`--bind ${q(WORKSPACE)} ${q(WORKSPACE)}`,
+		`--bind ${q(cache)} ${q(cache)}`,
 		// Explicit chdir: without it bubblewrap may fall back to $HOME, which
 		// would put the agent in the scratch dir and lose repo writes.
 		`--chdir ${q(WORKSPACE)}`,
