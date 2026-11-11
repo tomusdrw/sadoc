@@ -15,6 +15,7 @@ sandbox scrubs those variables, so the model can never read the API key.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import smtplib
@@ -23,10 +24,21 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from email.message import EmailMessage
+from importlib.resources import files
+
+from .email_template import LOGO_CID
 
 
 class NotifyError(RuntimeError):
     pass
+
+
+@dataclass
+class InlineImage:
+    filename: str
+    content: bytes
+    content_id: str
+    content_type: str = "image/png"
 
 
 @dataclass
@@ -37,6 +49,7 @@ class Message:
     to: list[str] = field(default_factory=list)
     from_addr: str | None = None
     headers: dict = field(default_factory=dict)
+    inline_images: list[InlineImage] = field(default_factory=list)
 
     def body(self) -> str:
         if self.html:
@@ -95,6 +108,16 @@ class ResendBackend(Backend):
         }
         if message.headers:
             payload["headers"] = message.headers
+        if message.html and message.inline_images:
+            payload["attachments"] = [
+                {
+                    "filename": image.filename,
+                    "content": base64.b64encode(image.content).decode("ascii"),
+                    "content_id": image.content_id,
+                    "content_type": image.content_type,
+                }
+                for image in message.inline_images
+            ]
         req = urllib.request.Request(
             self.endpoint,
             data=json.dumps(payload).encode(),
@@ -153,6 +176,17 @@ class SmtpBackend(Backend):
         msg.set_content(message.text)
         if message.html:
             msg.add_alternative(message.html, subtype="html")
+            html_part = msg.get_payload()[-1]
+            for image in message.inline_images:
+                maintype, subtype = image.content_type.split("/", 1)
+                html_part.add_related(
+                    image.content,
+                    maintype=maintype,
+                    subtype=subtype,
+                    cid=f"<{image.content_id}>",
+                    filename=image.filename,
+                    disposition="inline",
+                )
 
         try:
             with smtplib.SMTP(self.host, self.port, timeout=30) as server:
@@ -222,13 +256,24 @@ class Notifier:
             and self.state.notification_sent(alert.dedupe_key)
         ):
             return "duplicate"
+        html_body = getattr(alert, "html", None)
+        inline_images = []
+        if html_body and f"cid:{LOGO_CID}" in html_body:
+            inline_images.append(
+                InlineImage(
+                    filename="sadoc-logo.png",
+                    content=files("sadoc").joinpath("logo.png").read_bytes(),
+                    content_id=LOGO_CID,
+                )
+            )
         message = Message(
             subject=alert.subject,
             text=alert.text,
-            html=getattr(alert, "html", None),
+            html=html_body,
             to=self.to,
             from_addr=self.from_addr,
             headers=getattr(alert, "headers", {}) or {},
+            inline_images=inline_images,
         )
         try:
             sent_id = self.backend.send(message)
