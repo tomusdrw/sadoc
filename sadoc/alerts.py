@@ -36,14 +36,14 @@ URGENT = {CI_FAILED, REVIEW_UNADDRESSED, BLOCKED, REVIEW_RECEIVED, AUTO_MERGED, 
 
 # Accent colour per kind, so the header bar says something at a glance.
 _TONES = {
-    CI_FAILED: ("#b45309", "#fffbeb"),
-    REVIEW_UNADDRESSED: ("#b45309", "#fffbeb"),
-    BLOCKED: ("#b91c1c", "#fef2f2"),
-    FAILURE: ("#b91c1c", "#fef2f2"),
-    AUTO_MERGED: ("#047857", "#ecfdf5"),
-    MERGED: ("#047857", "#ecfdf5"),
-    READY_TO_MERGE: ("#047857", "#ecfdf5"),
-    NIGHTLY_SUMMARY: ("#1d4ed8", "#eff4ff"),
+    CI_FAILED: (et.WARN, et.WARN_SOFT),
+    REVIEW_UNADDRESSED: (et.WARN, et.WARN_SOFT),
+    BLOCKED: (et.DANGER, et.DANGER_SOFT),
+    FAILURE: (et.DANGER, et.DANGER_SOFT),
+    AUTO_MERGED: (et.OK, et.OK_SOFT),
+    MERGED: (et.OK, et.OK_SOFT),
+    READY_TO_MERGE: (et.OK, et.OK_SOFT),
+    NIGHTLY_SUMMARY: (et.ACCENT, et.ACCENT_SOFT),
 }
 
 
@@ -447,8 +447,8 @@ def unsupported_ecosystem(
             Block(
                 kind="note",
                 tone="warn",
-                value="I cannot update these yet. The rest of the repository is still "
-                "looked after, and nothing is broken by this.",
+                value="These paths are not yet on my maps, so I cannot update these dependencies. "
+                "The rest of the repository is still looked after, and nothing is broken by this.",
             )
         )
     else:
@@ -456,8 +456,8 @@ def unsupported_ecosystem(
             Block(
                 kind="note",
                 tone="warn",
-                value="I cannot update this repository yet. Nothing is broken by this - "
-                "it simply will not be looked after.",
+                value="This path is not yet on my maps, so I cannot update this repository. "
+                "Nothing is broken by this, but its dependencies will not be looked after yet.",
             )
         )
     return Alert(
@@ -466,7 +466,7 @@ def unsupported_ecosystem(
         blocks,
         repo=repo,
         dedupe_key=f"{UNSUPPORTED_ECOSYSTEM}:{repo}",
-        heading="A language I do not know",
+        heading="A tongue beyond my lore",
         footer=p.signature(),
         persona=p,
     )
