@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from . import lockfiles, registry, semver
+from . import environments, lockfiles, registry, semver
 from . import manifests as mf
 
 # Files we treat as dependency manifests.
@@ -197,9 +197,23 @@ def _fetch_and_parse(args) -> list[mf.Dep]:
         text = gh.file_text(owner, repo, path, ref=branch)
     except Exception:
         return []
+    if is_workflow(path):
+        # A workflow pins two different things: the actions it uses and the
+        # runtime those actions run on.
+        return mf.parse_workflow(text, path)
     if PurePosixPath(path).name in ("Dockerfile", "Dockerfile.dev", "Dockerfile.prod"):
         return mf.parse_dockerfile(text, path)
     return mf.parse_manifest(path, text)
+
+
+def _fetch_environment(args) -> list[dict]:
+    """The runtime versions pinned in a workflow."""
+    gh, owner, repo, path, branch = args
+    try:
+        text = gh.file_text(owner, repo, path, ref=branch)
+    except Exception:
+        return []
+    return [u.as_dict() for u in environments.detect_updates(f"{owner}/{repo}", path, text)]
 
 
 def _fetch_workflow(args) -> list[mf.Dep]:
@@ -230,15 +244,22 @@ def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> lis
     installed: dict[str, str] = {}
     lockfiles_present: set[str] = set()
     deps: list[mf.Dep] = []
+    environment_updates: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         jobs = [(gh, owner, repo, p, branch) for p in manifest_paths]
         jobs += [(gh, owner, repo, p, branch) for p in workflow_paths]
         lock_jobs = [(gh, owner, repo, p, branch) for p in lock_paths]
         futures = [pool.submit(_fetch_and_parse, j) for j in jobs]
+        env_futures = [pool.submit(_fetch_environment, j) for j in jobs if is_workflow(j[3])]
         lock_futures = [pool.submit(_fetch_lockfile, j) for j in lock_jobs]
         for fut in concurrent.futures.as_completed(futures):
             try:
                 deps.extend(fut.result())
+            except Exception:
+                pass
+        for fut in concurrent.futures.as_completed(env_futures):
+            try:
+                environment_updates.extend(fut.result())
             except Exception:
                 pass
         for fut in concurrent.futures.as_completed(lock_futures):
@@ -274,6 +295,9 @@ def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> lis
         pinned = _clean_version(dep.current) if dep.current else None
         baseline = installed_version or pinned
         has_lockfile = _has_lockfile(eco, lockfiles_present)
+        if eco == "action":
+            # An action pinned as "v4" should become "v7", not "v7.0.1".
+            latest = _match_pin_precision(baseline or pinned, latest)
 
         # Does the manifest constraint already permit the new version?
         permits = bool(constraint) and semver.allows(constraint, latest, eco)
@@ -331,6 +355,22 @@ def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> lis
             )
         )
     return updates
+
+
+def _match_pin_precision(current: str | None, latest: str) -> str:
+    """Keep an action pin in the style it was written in.
+
+    `actions/checkout@v4` becomes `actions/checkout@v7`, not `@v7.0.1`.
+    """
+    if not current:
+        return latest
+    stripped = current.strip().lstrip("v")
+    if "." in stripped:
+        return latest  # the pin names a full version, keep the full version
+    latest_major = latest.strip().lstrip("v").split(".")[0]
+    if not latest_major.isdigit():
+        return latest
+    return ("v" + latest_major) if latest.startswith("v") else latest_major
 
 
 def _clean_version(text: str | None) -> str | None:

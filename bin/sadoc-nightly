@@ -82,8 +82,14 @@ run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
 log "=== run ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" || true
 
+log "=== doctor ==="
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" doctor || true
+
 log "=== monitor ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
+
+log "=== releases ==="
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" releases --notify || true
 
 log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"

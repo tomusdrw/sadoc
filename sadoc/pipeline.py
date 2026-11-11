@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC
 
-from . import advisories, alerts, dependabot, detect, persona, sanitize
+from . import advisories, alerts, dependabot, detect, doctor, persona, release_check, sanitize
 from .detect import Update
 from .gitops import Git, GitError
 from .piworker import PiModel, PiSession
@@ -451,6 +451,147 @@ class Worker:
         security = result.get("security_updates", {})
         if security.get("status") == "ok":
             self._safe_log("Dependabot security updates are off too", repo=f"{owner}/{repo}")
+
+    def nudge_release(self, owner: str, repo: str) -> str:
+        """Tell the human when the project owes a release.
+
+        What a release means differs per repository, so the mechanism is worked
+        out from the repository itself: crates.io, npm, PyPI, a GitHub release,
+        or nothing at all because the project deploys from its default branch.
+        """
+        try:
+            branch = self.gh.default_branch(owner, repo)
+            status = release_check.check(self.gh, owner, repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log(
+                f"could not check the release status: {exc}", repo=f"{owner}/{repo}", level="error"
+            )
+            return "unknown"
+        if not status.due:
+            return "no release due"
+        version = status.packages[0][1] if status.packages else ""
+        self.notify(
+            alerts.release_due(
+                f"{owner}/{repo}",
+                version,
+                status.published,
+                status.kinds,
+                status.note,
+                persona=self.persona,
+            )
+        )
+        return "release due"
+
+    # ------------------------------------------------------------ doctor
+    def doctor_repo(self, owner: str, repo: str, dry_run: bool | None = None) -> dict:
+        """Look at the default branch. If it is red, offer a fix."""
+        dry_run = self.cfg.dry_run if dry_run is None else dry_run
+        result = {"repo": f"{owner}/{repo}", "state": "unknown", "pr": "", "detail": ""}
+        branch = self.gh.default_branch(owner, repo)
+
+        # Something Sadoc already opened is probably the same problem.
+        for pr in self.gh.pr_list(owner, repo, state="open"):
+            if (pr.get("headRefName") or "").startswith(f"deps/{repo}/"):
+                result["state"] = "already_open"
+                result["pr"] = pr.get("url", "")
+                result["detail"] = f"PR #{pr.get('number')} is already open"
+                return result
+
+        diagnosis = doctor.diagnose(self.gh, owner, repo, branch)
+        result["state"] = diagnosis.state
+        result["detail"] = diagnosis.detail
+        if not diagnosis.worth_fixing:
+            if diagnosis.state == doctor.TRANSIENT_FAILURE:
+                self._safe_log(f"{owner}/{repo}: {diagnosis.detail}", repo=f"{owner}/{repo}")
+            return result
+
+        self._safe_log(
+            f"{owner}/{repo}: the default branch is broken - {diagnosis.detail}",
+            repo=f"{owner}/{repo}",
+        )
+
+        git = self.prepare_clone(owner, repo, branch)
+        fix_branch = f"fix/{repo}/{time.strftime('%Y%m%d-%H%M%S')}"
+        git.create_branch(fix_branch)
+
+        model = self.cfg.model_for("fixci")
+        spec = PiModel(
+            name=f"sadoc-{model.provider}",
+            base_url=model.base_url,
+            model=model.model,
+            context=model.context,
+            max_tokens=model.max_tokens,
+            reasoning=model.reasoning,
+        )
+        session = PiSession(
+            cwd=git.path,
+            model=spec,
+            agent_dir=self.cfg.agent_dir,
+            allow_network=self.cfg.allow_network,
+            scrub_env=self.cfg.scrub_env,
+            extra_secrets=self._notify_secret_names(),
+        )
+        try:
+            session.start()
+            prompt = load_prompt(
+                "doctor",
+                JOB=diagnosis.failed_job or "the build",
+                BRANCH=branch,
+                LOGS=doctor.summarise(diagnosis),
+            )
+            turn = session.prompt(prompt, timeout=3600)
+            self._safe_log(f"doctor: {turn.text[:300]}", repo=f"{owner}/{repo}")
+            changed = git.changed_files()
+            if not changed:
+                result["detail"] = "the model could not fix it"
+                self.notify(
+                    alerts.failure(
+                        f"{owner}/{repo}",
+                        "the default branch is broken",
+                        (diagnosis.detail + "\n" + turn.text[:1200]).strip(),
+                        persona=self.persona,
+                    )
+                )
+                return result
+
+            message = f"fix: {diagnosis.failed_job or 'the build'} is broken"
+            git.commit(message)
+            if dry_run:
+                result["detail"] = f"dry run - would open a PR with {len(changed)} files"
+                result["pr"] = ""
+                return result
+            git.push(fix_branch)
+            pr = self.gh.open_pr(
+                owner,
+                repo,
+                f"fix: {diagnosis.failed_job or 'the build'} is broken on {branch}",
+                f"The default branch is failing.\n\n{diagnosis.detail}\n\n"
+                f"```\n{doctor.summarise(diagnosis, 4000)}\n```\n\n"
+                f"Fixed by Sadoc.",
+                fix_branch,
+                branch,
+            )
+            result["pr"] = pr.get("url", "")
+            self.state.record_pr(
+                f"{owner}/{repo}",
+                0,
+                tier="D",
+                title=pr.get("url", ""),
+                url=pr.get("url", ""),
+                branch=fix_branch,
+                state="open",
+            )
+            self.notify(
+                alerts.failure(
+                    f"{owner}/{repo}",
+                    "the default branch was broken",
+                    f"I have opened a pull request with the fix: {pr.get('url', '')}",
+                    persona=self.persona,
+                )
+            )
+            return result
+        finally:
+            session.close()
 
     # ---------------------------------------------------------- leak check
     def _out_of_scope_changes(self, git: Git, updates: list[Update]) -> list[dict]:
@@ -1309,6 +1450,8 @@ class Worker:
                         repo, number, view.get("url") or "", tier, persona=self.persona
                     )
                 )
+                # The version may have moved on, which means a release is owed.
+                self.nudge_release(owner, name)
             return f"PR is {pr_state.lower()}"
 
         checks = self._current_checks(owner, name, number)

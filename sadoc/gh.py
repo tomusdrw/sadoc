@@ -124,7 +124,19 @@ class Gh:
         return self.api(f"repos/{owner}/{repo}")
 
     def repo_tree(self, owner: str, repo: str, branch: str) -> list[dict]:
-        data = self.api(f"repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
+        """The files in a repository at a branch.
+
+        The branch is resolved to a commit first: the tree endpoint does not
+        always resolve a branch name on its own.
+        """
+        sha = branch
+        try:
+            commit = self.api(f"repos/{owner}/{repo}/commits/{branch}")
+            if isinstance(commit, dict) and commit.get("sha"):
+                sha = commit["sha"]
+        except Exception:  # noqa: BLE001
+            pass
+        data = self.api(f"repos/{owner}/{repo}/git/trees/{sha}?recursive=1")
         return data.get("tree", []) if isinstance(data, dict) else []
 
     def file_text(self, owner: str, repo: str, path: str, ref: str | None = None) -> str:

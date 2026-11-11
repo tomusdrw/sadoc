@@ -24,7 +24,7 @@ if __package__ in (None, ""):  # running as a script
 
 from sadoc import alerts as alerts_mod  # noqa: E402
 from sadoc import config as config_mod  # noqa: E402
-from sadoc import detect, pipeline  # noqa: E402
+from sadoc import detect, pipeline, release_check  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from sadoc.state import State  # noqa: E402
@@ -263,6 +263,87 @@ def cmd_report(args, cfg, gh, state) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- doctor
+def cmd_doctor(args, cfg, gh, state) -> int:
+    """Look at the default branch of every repository, and fix what is broken."""
+    worker = pipeline.Worker(
+        cfg, gh, state, log=_log, notifier=_make_notifier(cfg, state, cfg.dry_run)
+    )
+    scoped = detect.resolve_scope(cfg, gh, state)
+    if args.repo:
+        scoped = [s for s in scoped if s["name"] == args.repo]
+        if not scoped:
+            _log(f"repo '{args.repo}' is not in scope")
+            return 1
+    broken = 0
+    for entry in scoped:
+        result = worker.doctor_repo(entry["owner"], entry["name"])
+        if result["state"] in ("fixable", "transient"):
+            broken += 1
+            _log(f"  {entry['repo']}: {result['state']} - {result['detail']}")
+            if result.get("pr"):
+                _log(f"    {result['pr']}")
+        elif result["state"] == "already_open":
+            _log(f"  {entry['repo']}: a fix is already open ({result['pr']})")
+        if args.json:
+            print(json.dumps(result, default=str))
+    _log(f"{broken} repository branch(es) need attention")
+    return 0
+
+
+# -------------------------------------------------------------- releases
+def cmd_releases(args, cfg, gh, state) -> int:
+    """Report which repositories owe a release."""
+    worker = pipeline.Worker(
+        cfg, gh, state, log=_log, notifier=_make_notifier(cfg, state, cfg.dry_run)
+    )
+    scoped = detect.resolve_scope(cfg, gh, state)
+    if args.repo:
+        scoped = [s for s in scoped if s["name"] == args.repo]
+    due = 0
+    for entry in scoped:
+        owner, name = entry["owner"], entry["name"]
+        try:
+            branch = gh.default_branch(owner, name)
+            status = release_check.check(gh, owner, name, branch)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"  {owner}/{name}: could not check - {exc}")
+            continue
+        if status.due:
+            due += 1
+            _log(f"  {owner}/{name}: a release is due - {status.summary()}")
+            _log(f"    {status.note}")
+            if args.notify:
+                worker.notify(
+                    alerts_mod.release_due(
+                        f"{owner}/{name}",
+                        status.packages[0][1] if status.packages else "",
+                        status.published,
+                        status.kinds,
+                        status.note,
+                        persona=worker.persona,
+                    )
+                )
+        elif args.verbose:
+            _log(f"  {owner}/{name}: {status.summary()} ({status.kinds or 'no release process'})")
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "repo": f"{owner}/{name}",
+                        "due": status.due,
+                        "version": status.version,
+                        "published": status.published,
+                        "kinds": status.kinds,
+                        "note": status.note,
+                    },
+                    default=str,
+                )
+            )
+    _log(f"{due} repository/ies owe a release")
+    return 0
+
+
 # ----------------------------------------------------------------- status
 def cmd_status(args, cfg, gh, state) -> int:
     rows = state.conn.execute(
@@ -324,6 +405,18 @@ def main() -> int:
     p_rem = sub.add_parser("remind", help="email about unattended PRs")
     p_rem.add_argument("--json", action="store_true")
     p_rem.set_defaults(func=cmd_remind)
+
+    p_doc = sub.add_parser("doctor", help="check the default branch and fix what is broken")
+    p_doc.add_argument("--repo", default=None)
+    p_doc.add_argument("--json", action="store_true")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_rel = sub.add_parser("releases", help="report which repositories owe a release")
+    p_rel.add_argument("--repo", default=None)
+    p_rel.add_argument("--notify", action="store_true", help="send the nudge by email")
+    p_rel.add_argument("--verbose", action="store_true")
+    p_rel.add_argument("--json", action="store_true")
+    p_rel.set_defaults(func=cmd_releases)
 
     p_rep = sub.add_parser("report", help="write a markdown digest")
     p_rep.add_argument("--out", default=None)

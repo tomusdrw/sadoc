@@ -25,6 +25,7 @@ REMINDER_MERGE = "reminder_merge"
 BLOCKED = "blocked"
 AUTO_MERGED = "auto_merged"
 MERGED = "merged"
+RELEASE_DUE = "release_due"
 FAILURE = "failure"
 NIGHTLY_SUMMARY = "nightly_summary"
 
@@ -418,6 +419,44 @@ def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) 
         repo=repo,
         dedupe_key=f"{FAILURE}:{repo}:{stage}:{int(time.time() // 86400)}",
         heading="Something went wrong",
+        persona=p,
+    )
+
+
+def release_due(
+    repo: str,
+    version: str,
+    published: str,
+    kinds: list[str],
+    note: str,
+    persona: Persona | None = None,
+) -> Alert:
+    """The version has moved on and the project may owe a release."""
+    p = persona or Persona()
+    blocks = _rows(
+        ("Repository", repo),
+        ("Version now", version),
+        ("Last published", published or "nothing yet"),
+        ("What a release means here", ", ".join(kinds) if kinds else "not worked out"),
+    )
+    if note:
+        blocks.append(Block(kind="paragraph", value=note))
+    blocks.append(
+        Block(
+            kind="note",
+            tone="warn",
+            value="The version has moved past what has been published. A release would "
+            "put it out in the world.",
+        )
+    )
+    return Alert(
+        RELEASE_DUE,
+        p.subject(f"{repo} is ready for a release"),
+        blocks,
+        repo=repo,
+        dedupe_key=f"{RELEASE_DUE}:{repo}:{version}",
+        heading="Ready to be let go",
+        footer=p.signature(),
         persona=p,
     )
 
