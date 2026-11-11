@@ -944,9 +944,13 @@ class Worker:
         GitHub needs a moment to register the checks after a push, so an empty
         check list is not immediately "no CI" - we wait for them to appear
         before giving up.
+
+        A failure does not end the wait: the other checks keep running, and the
+        model can only be given complete logs once the whole run is over.
         """
         deadline = time.time() + timeout_s
         empty_since: float | None = None
+        failed = False
         while time.time() < deadline:
             checks = self.gh.pr_checks(owner, repo, number)
             if not checks:
@@ -960,19 +964,32 @@ class Worker:
             empty_since = None
             buckets = [c.get("bucket") for c in checks]
             if any(b in ("fail", "cancel") for b in buckets):
-                return "fail"
-            if all(b in ("pass", "skipping") for b in buckets):
-                return "pass"
+                failed = True
+            pending = any(b == "pending" for b in buckets)
+            if not pending:
+                if failed:
+                    return "fail"
+                if all(b in ("pass", "skipping") for b in buckets):
+                    return "pass"
             time.sleep(20)
-        return "pending"
+        return "fail" if failed else "pending"
 
     def failed_ci_logs(self, owner: str, repo: str, number: int) -> str:
-        run_ids = self.gh.pr_run_ids(owner, repo, number)
+        """The logs of the failing checks.
+
+        The run's own log is preferred, but it is empty while the run is still
+        going, so the failed job's log is fetched directly as a fallback.
+        """
         chunks = []
-        for run_id in run_ids[:4]:
+        for run_id in self.gh.pr_run_ids(owner, repo, number)[:4]:
             logs = self.gh.run_logs_failed(owner, repo, run_id, max_bytes=20000)
             if logs.strip():
                 chunks.append(f"--- run {run_id} ---\n{logs}")
+        if not chunks:
+            for job_id in self.gh.failed_job_ids(owner, repo, number)[:4]:
+                logs = self.gh.job_logs(owner, repo, job_id)
+                if logs.strip():
+                    chunks.append(f"--- job {job_id} ---\n{logs}")
         return "\n".join(chunks)[-40000:]
 
     def fix_ci(

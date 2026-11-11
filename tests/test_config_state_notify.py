@@ -202,3 +202,25 @@ def test_notify_returns_failed_when_the_backend_fails():
     worker.log = lambda *a, **k: None
     worker.notifier = notify.Notifier(BrokenBackend(), state=None, to=["a@b.c"])
     assert worker.notify(alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, [])) == "failed"
+
+
+class _FakeGh:
+    """A gh stand-in that records what the pipeline asked it."""
+
+    def __init__(self, checks):
+        self.checks = checks
+
+    def pr_checks(self, owner, repo, number):
+        return self.checks
+
+
+def test_failed_job_ids_parses_both_link_shapes():
+    from deps_bot.gh import Gh
+
+    gh = Gh.__new__(Gh)
+    gh.pr_checks = lambda o, r, n: [
+        {"bucket": "fail", "link": "https://github.com/o/r/actions/runs/1/job/222"},
+        {"bucket": "fail", "link": "https://github.com/o/r/actions/runs/1/jobs/333"},
+        {"bucket": "pass", "link": "https://github.com/o/r/actions/runs/1/job/444"},
+    ]
+    assert gh.failed_job_ids("o", "r", 1) == ["222", "333"]

@@ -7,6 +7,7 @@ without re-implementing GitHub's REST surface.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -378,6 +379,37 @@ class Gh:
             if "/runs/" in link:
                 ids.append(link.split("/runs/")[1].split("/")[0])
         return ids
+
+    def failed_job_ids(self, owner: str, repo: str, number: int) -> list[str]:
+        """The ids of the failed jobs on a pull request."""
+        ids = []
+        for check in self.pr_checks(owner, repo, number):
+            if check.get("bucket") not in ("fail", "cancel"):
+                continue
+            link = check.get("link") or ""
+            for marker in ("/jobs/", "/job/"):
+                if marker in link:
+                    ids.append(link.split(marker, 1)[1].split("/")[0].split("?")[0])
+                    break
+        return ids
+
+    def job_logs(self, owner: str, repo: str, job_id: str) -> str:
+        """The logs of a single job."""
+        proc = subprocess.run(
+            [
+                self.binary,
+                "api",
+                f"repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+                "--allow-escape-sequences",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            return ""
+        # Strip the ANSI escape sequences GitHub puts in the log.
+        return re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout)
 
     # ---------------------------------------------------------- workflow
     def action_latest_release(self, owner: str, repo: str) -> str | None:
