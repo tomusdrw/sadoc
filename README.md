@@ -1,7 +1,7 @@
 # Sadoc
 
 <p align="center">
-  <img src="assets/sadoc-logo.png" alt="Sadoc, a Harfoot Trailfinder holding his Star-book" width="240" />
+  <img src="assets/sadoc-readme.png" alt="Sadoc, a Harfoot Trailfinder holding his Star-book" width="240" height="240" />
 </p>
 
 [![CI](https://github.com/tomusdrw/sadoc/actions/workflows/ci.yml/badge.svg)](https://github.com/tomusdrw/sadoc/actions/workflows/ci.yml)
