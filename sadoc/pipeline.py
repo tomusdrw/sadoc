@@ -1,4 +1,4 @@
-"""The deps-bot pipeline.
+"""The sadoc pipeline.
 
 One repo at a time:
     detect -> bump (pi) -> verify (local) -> migrate (pi) -> commit/push -> PR
@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC
 
-from . import advisories, alerts, detect, sanitize
+from . import advisories, alerts, dependabot, detect, persona, sanitize
 from .detect import Update
 from .gitops import Git, GitError
 from .piworker import PiModel, PiSession
@@ -192,6 +192,7 @@ class Worker:
         self.state = state
         self.log = log or _default_log
         self.notifier = notifier
+        self.persona = persona.load(getattr(cfg, "persona", None))
         self.adv_cache = advisories.AdvisoryCache(gh)
 
     def _notify_secret_names(self) -> list[str]:
@@ -264,7 +265,7 @@ class Worker:
 
     # -------------------------------------------------------------- clone
     def existing_deps_pr(self, owner: str, repo: str) -> dict | None:
-        """An open PR that deps-bot already opened for this repo."""
+        """An open PR that sadoc already opened for this repo."""
         try:
             prs = self.gh.pr_list(owner, repo, state="open")
         except Exception:
@@ -396,6 +397,9 @@ class Worker:
             ]
         elif tier == TIER_C:
             lines += ["> These updates address published security advisories.", ""]
+        flourish = self.persona.flourish(seed=abs(hash((repo, tier, ref_id))) % 997)
+        if flourish:
+            lines += [f"_{flourish}_", ""]
         lines += [
             "<sub>",
             f"ref {ref_id}",
@@ -428,6 +432,25 @@ class Worker:
         if version:
             return f"deps/{package}-{version}"
         return f"deps/{package}"
+
+    def _hand_over_from_dependabot(self, owner: str, repo: str, branch: str) -> None:
+        """Switch Dependabot off in a repository this tool takes care of."""
+        try:
+            result = dependabot.take_over(self.gh, owner, repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log(
+                f"could not switch Dependabot off: {exc}", repo=f"{owner}/{repo}", level="error"
+            )
+            return
+        version = result.get("version_updates", {})
+        if version.get("changed"):
+            self._safe_log(
+                f"Dependabot version updates are off now ({version.get('detail')})",
+                repo=f"{owner}/{repo}",
+            )
+        security = result.get("security_updates", {})
+        if security.get("status") == "ok":
+            self._safe_log("Dependabot security updates are off too", repo=f"{owner}/{repo}")
 
     # ---------------------------------------------------------- leak check
     def _out_of_scope_changes(self, git: Git, updates: list[Update]) -> list[dict]:
@@ -590,6 +613,12 @@ class Worker:
         try:
             git = self.prepare_clone(owner, repo, default_branch)
 
+            # --- take over from Dependabot ---------------------------
+            # Otherwise the two open competing pull requests for the same
+            # dependency.
+            if self.cfg.disable_dependabot:
+                self._hand_over_from_dependabot(owner, repo, default_branch)
+
             # --- work out how to build this project ---------------------
             # The agent reads the CI configuration and works out the build and
             # test commands itself, including any code generation step. The
@@ -612,7 +641,14 @@ class Worker:
                     result.detail = f"could not work out how to build this project: {detail}"
                     self._safe_log(result.detail, repo=f"{owner}/{repo}", level="error")
                     self.state.end_attempt(attempt_id, "failed", result.detail)
-                    self.notify(alerts.failure(f"{owner}/{repo}", "build discovery", result.detail))
+                    self.notify(
+                        alerts.failure(
+                            f"{owner}/{repo}",
+                            "build discovery",
+                            result.detail,
+                            persona=self.persona,
+                        )
+                    )
                     return result
                 self._safe_log(f"build command: {setup['verify_command']}", repo=f"{owner}/{repo}")
                 # The discovery step may have left generated files behind.
@@ -690,7 +726,12 @@ class Worker:
                     result.detail = "local verification still failing after migration"
                     self.state.end_attempt(attempt_id, "failed", result.detail)
                     self.notify(
-                        alerts.failure(f"{owner}/{repo}", "local verification", output[-1500:])
+                        alerts.failure(
+                            f"{owner}/{repo}",
+                            "local verification",
+                            output[-1500:],
+                            persona=self.persona,
+                        )
                     )
                     return result
 
@@ -789,6 +830,7 @@ class Worker:
                         len(updates),
                         [f"{u.name}: {u.current or '(unpinned)'} -> {u.latest}" for u in updates],
                         bump.text[:800],
+                        persona=self.persona,
                     )
                 )
 
@@ -846,6 +888,7 @@ class Worker:
                             url,
                             tier,
                             detail,
+                            persona=self.persona,
                         )
                     )
 
@@ -863,12 +906,20 @@ class Worker:
                         )
                         self.state.log(f"auto-merged PR #{number}", repo=f"{owner}/{repo}")
                         result.detail = "auto-merged"
-                        self.notify(alerts.auto_merged(f"{owner}/{repo}", number, url, tier))
+                        self.notify(
+                            alerts.auto_merged(
+                                f"{owner}/{repo}", number, url, tier, persona=self.persona
+                            )
+                        )
                     else:
                         self.state.log(f"not auto-merged: {why}", repo=f"{owner}/{repo}")
                         result.detail = why
                         if tier == "A" and ci_state == "pass":
-                            self.notify(alerts.ready_to_merge(f"{owner}/{repo}", number, url, tier))
+                            self.notify(
+                                alerts.ready_to_merge(
+                                    f"{owner}/{repo}", number, url, tier, persona=self.persona
+                                )
+                            )
                 elif ci_state == "fail":
                     self.notify(
                         alerts.ci_failed(
@@ -895,7 +946,9 @@ class Worker:
                 data={"traceback": detail[-4000:]},
             )
             self.state.end_attempt(attempt_id, "failed", detail)
-            self.notify(alerts.failure(f"{owner}/{repo}", "pipeline", detail[-1500:]))
+            self.notify(
+                alerts.failure(f"{owner}/{repo}", "pipeline", detail[-1500:], persona=self.persona)
+            )
             return result
 
     def _pr_number(self, url: str) -> int | None:
@@ -1046,7 +1099,7 @@ class Worker:
         out = []
         for c in self.gh.pr_review_comments(owner, repo, number):
             body = (c.get("body") or "").strip()
-            if not body or body.startswith("deps-bot"):
+            if not body or body.startswith("sadoc"):
                 continue
             out.append(
                 {
@@ -1061,7 +1114,7 @@ class Worker:
             )
         for c in self.gh.pr_issue_comments(owner, repo, number):
             body = (c.get("body") or "").strip()
-            if not body or body.startswith("deps-bot"):
+            if not body or body.startswith("sadoc"):
                 continue
             out.append(
                 {
@@ -1109,7 +1162,7 @@ class Worker:
         self.state.log(f"review: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return "model made no changes"
-        git.commit("chore(deps): address review feedback\n\nGenerated by deps-bot.")
+        git.commit("chore(deps): address review feedback\n\nGenerated by sadoc.")
         git.push(branch)
         return result.text[:500]
 
@@ -1195,7 +1248,8 @@ class Worker:
                             number,
                             url,
                             tier,
-                            "CI is failing on this pull request and the bot could not fix it.",
+                            "CI is failing on this pull request and I could not fix it.",
+                            persona=self.persona,
                         )
                     )
                     == "sent"
@@ -1206,7 +1260,11 @@ class Worker:
             # 2. Nobody has reviewed it yet.
             if not review_decision and age_h >= review_after_h:
                 if (
-                    self.notify(alerts.reminder_review(repo, number, url, tier, int(age_h)))
+                    self.notify(
+                        alerts.reminder_review(
+                            repo, number, url, tier, int(age_h), persona=self.persona
+                        )
+                    )
                     == "sent"
                 ):
                     sent.append("reminder_review")
@@ -1217,7 +1275,9 @@ class Worker:
                 ci_green
                 and mergeable
                 and age_h >= merge_after_h
-                and self.notify(alerts.reminder_merge(repo, number, url, tier, int(age_h)))
+                and self.notify(
+                    alerts.reminder_merge(repo, number, url, tier, int(age_h), persona=self.persona)
+                )
                 == "sent"
             ):
                 sent.append("reminder_merge")
@@ -1244,7 +1304,11 @@ class Worker:
             self.state.record_pr(repo, number, state=new_state, updated_at=time.time())
             self.state.log(f"PR is {pr_state.lower()}", repo=repo)
             if new_state == "merged" and not row_get(repo_row, "auto_merged"):
-                self.notify(alerts.merged_by_human(repo, number, view.get("url") or "", tier))
+                self.notify(
+                    alerts.merged_by_human(
+                        repo, number, view.get("url") or "", tier, persona=self.persona
+                    )
+                )
             return f"PR is {pr_state.lower()}"
 
         checks = self._current_checks(owner, name, number)
@@ -1335,6 +1399,7 @@ class Worker:
                 for c in fresh:
                     self.state.mark_comment_processed(repo, number, str(c.get("id")), note[:200])
                 self._resolve_threads(owner, name, number, fresh)
+                self._post_review_reply(owner, name, number, note, fresh)
                 return f"addressed {len(fresh)} comment(s): {note[:160]}"
             return f"ci={ci_state}"
         finally:
@@ -1352,8 +1417,26 @@ class Worker:
         self.state.record_pr(
             f"{owner}/{repo}", number, state="merged", auto_merged=1, updated_at=time.time()
         )
-        self.notify(alerts.auto_merged(f"{owner}/{repo}", number, "", tier))
+        self.notify(alerts.auto_merged(f"{owner}/{repo}", number, "", tier, persona=self.persona))
         return "auto-merged"
+
+    def _post_review_reply(
+        self, owner: str, repo: str, number: int, note: str, comments: list[dict]
+    ) -> None:
+        """Reply on the pull request, so the reviewer knows what was done."""
+        if not note:
+            return
+        body = sanitize.scrub_text(note.strip())
+        if not body or sanitize.contains_leak(body):
+            body = "I have gone through the comments and made the changes."
+        try:
+            self.gh.pr_comment(owner, repo, number, f"{body}\n{self.persona.signoff()}")
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log(
+                f"could not comment on the pull request: {exc}",
+                repo=f"{owner}/{repo}",
+                level="error",
+            )
 
     def _resolve_threads(self, owner: str, repo: str, number: int, comments: list[dict]) -> None:
         """Mark the review threads we acted on as resolved."""

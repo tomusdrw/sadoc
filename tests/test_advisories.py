@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deps_bot import advisories
+from sadoc import advisories
 
 
 def test_version_in_comparison_range():

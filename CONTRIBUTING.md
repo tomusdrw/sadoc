@@ -5,8 +5,8 @@ Thanks for considering a contribution.
 ## Getting set up
 
 ```bash
-git clone https://github.com/tomusdrw/deps-bot.git
-cd deps-bot
+git clone https://github.com/tomusdrw/sadoc.git
+cd sadoc
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest
@@ -45,8 +45,8 @@ Include the repository name, what you expected, what happened, and the relevant
 part of the log:
 
 ```bash
-journalctl --user -u deps-bot -n 100
-sqlite3 ~/.local/share/deps-bot/state.db \
+journalctl --user -u sadoc -n 100
+sqlite3 ~/.local/share/sadoc/state.db \
   "select * from events order by ts desc limit 20"
 ```
 
@@ -54,7 +54,7 @@ If the bug is about the model producing the wrong change, the full transcript is
 stored locally and can be attached with the ref id from the pull request:
 
 ```bash
-sqlite3 ~/.local/share/deps-bot/state.db \
+sqlite3 ~/.local/share/sadoc/state.db \
   "select transcript from pr_details where ref_id='8f2a1c3d'"
 ```
 

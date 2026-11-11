@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Command line interface for deps-bot.
+"""Command line interface for sadoc.
 
 Usage:
-    deps-bot scan                 discover repos, detect outdated dependencies
-    deps-bot scope                show which repos are in scope and why
-    deps-bot run [--repo NAME]    run the pipeline (bump -> verify -> PR)
-    deps-bot monitor              watch existing PRs: CI + reviews + mergeability
-    deps-bot remind               email about pull requests left unattended
-    deps-bot report               print a summary of the current state
-    deps-bot status               show the queue and open pull requests
+    sadoc scan                 discover repos, detect outdated dependencies
+    sadoc scope                show which repos are in scope and why
+    sadoc run [--repo NAME]    run the pipeline (bump -> verify -> PR)
+    sadoc monitor              watch existing PRs: CI + reviews + mergeability
+    sadoc remind               email about pull requests left unattended
+    sadoc report               print a summary of the current state
+    sadoc status               show the queue and open pull requests
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from pathlib import Path
 if __package__ in (None, ""):  # running as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from deps_bot import alerts as alerts_mod  # noqa: E402
-from deps_bot import config as config_mod  # noqa: E402
-from deps_bot import detect, pipeline  # noqa: E402
-from deps_bot.gh import Gh, GhError  # noqa: E402
-from deps_bot.notify import Notifier, NotifyError, build_backend  # noqa: E402
-from deps_bot.state import State  # noqa: E402
+from sadoc import alerts as alerts_mod  # noqa: E402
+from sadoc import config as config_mod  # noqa: E402
+from sadoc import detect, pipeline  # noqa: E402
+from sadoc.gh import Gh, GhError  # noqa: E402
+from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
+from sadoc.state import State  # noqa: E402
 
 
 def _log(msg: str, repo: str | None = None, level: str = "info", data: dict | None = None) -> None:
@@ -247,7 +247,7 @@ def cmd_remind(args, cfg, gh, state) -> int:
 
 # ----------------------------------------------------------------- report
 def cmd_report(args, cfg, gh, state) -> int:
-    from deps_bot import report as report_mod
+    from sadoc import report as report_mod
 
     text = report_mod.build(state)
     if getattr(args, "out", None):
@@ -281,9 +281,9 @@ def cmd_status(args, cfg, gh, state) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="deps-bot",
-        description="A nightly dependency update agent for your own GitHub repositories.",
-        epilog="Run 'deps-bot <command> --help' for command specific options.",
+        prog="sadoc",
+        description="Sadoc - a nightly dependency update agent for your own GitHub repositories.",
+        epilog="Run 'sadoc <command> --help' for command specific options.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

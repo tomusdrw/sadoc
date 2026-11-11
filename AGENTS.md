@@ -4,7 +4,7 @@ Guidance for coding agents working on this repository.
 
 ## What this is
 
-`deps-bot` is a nightly dependency-update agent for a user's own GitHub
+`sadoc` is a nightly dependency-update agent for a user's own GitHub
 repositories. It detects outdated dependencies deterministically, uses a local
 model to apply the updates and fix what breaks, opens pull requests, drives CI
 to green, and answers review comments.
@@ -12,7 +12,7 @@ to green, and answers review comments.
 ## Layout
 
 ```
-deps_bot/          the package
+sadoc/          the package
   cli.py           argument parsing and the subcommands
   config.py        config.toml -> Config
   state.py         SQLite persistence
@@ -47,7 +47,7 @@ docs/design.md     why things are the way they are
    semver arithmetic is done in `semver.py`. The model only edits files.
 
 3. **The project has no runtime dependencies.** The standard library only. Do
-   not add an import of a third-party package to `deps_bot/` — `pyyaml` was
+   not add an import of a third-party package to `sadoc/` — `pyyaml` was
    removed for exactly this reason.
 
 4. **Keep pull requests free of internal detail.** Any text that will be
@@ -77,7 +77,7 @@ ruff format .
 ```
 
 Run the CLI against a real repository only when you have `gh` authenticated and
-the local model running. `deps-bot --dry-run run` is the safe way to try the
+the local model running. `sadoc --dry-run run` is the safe way to try the
 pipeline end to end.
 
 ## Things that look wrong but are not

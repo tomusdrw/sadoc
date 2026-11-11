@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deps_bot import semver
+from sadoc import semver
 
 
 @pytest.mark.parametrize(

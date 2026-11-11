@@ -1,11 +1,11 @@
 /**
- * deps-bot sandbox + policy extension for pi.
+ * sadoc sandbox + policy extension for pi.
  *
  * Loaded with:  pi --no-extensions -e extensions/sandbox.ts
  *
  * Guarantees:
  *  1. Every shell command runs inside bubblewrap:
- *       - no network (--unshare-net) unless DEPSBOT_ALLOW_NET=1
+ *       - no network (--unshare-net) unless SADOC_ALLOW_NET=1
  *       - the workspace is read-write, the rest of / is read-only
  *       - /tmp and tool caches are writable (HOME is redirected to a scratch dir)
  *  2. The agent can never mutate remote state. git push / gh pr create / gh api
@@ -17,11 +17,11 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const WORKSPACE = process.env.DEPSBOT_WORKSPACE || process.cwd();
-const ALLOW_NET = process.env.DEPSBOT_ALLOW_NET === "1";
+const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
+const ALLOW_NET = process.env.SADOC_ALLOW_NET === "1";
 // A persistent, writable directory for the package managers' caches. Without
 // it every run re-downloads the whole registry, which is slow and flaky.
-const TOOL_CACHE = process.env.DEPSBOT_CACHE_DIR || "/tmp/depsbot-toolcache";
+const TOOL_CACHE = process.env.SADOC_CACHE_DIR || "/tmp/depsbot-toolcache";
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
 const FORBIDDEN: Array<[RegExp, string]> = [
@@ -52,7 +52,7 @@ function q(s: string): string {
 export function buildSandbox(command: string, cwd: string): string {
 	const scratch = "/tmp/depsbot-scratch";
 	const cache = TOOL_CACHE;
-	const realHome = process.env.DEPSBOT_REAL_HOME || "/root";
+	const realHome = process.env.SADOC_REAL_HOME || "/root";
 	// NOTE: /bin/sh is bash in POSIX mode on this box, where sourcing a missing
 	// file aborts the whole script. Use bash explicitly and guard every source.
 	const inner = [
@@ -97,7 +97,7 @@ export function buildSandbox(command: string, cwd: string): string {
 		`--chdir ${q(WORKSPACE)}`,
 		"--setenv HOME /tmp/depsbot-scratch",
 		"--setenv TMPDIR /tmp",
-		"--setenv DEPSBOT_SANDBOX 1",
+		"--setenv SADOC_SANDBOX 1",
 		// NOTE: the inner script must be quoted, otherwise the *outer* shell that
 		// pi spawns splits it on ";" / "||" and runs parts outside the sandbox.
 		"bash", "-c", q(inner),
@@ -114,7 +114,7 @@ export default function (pi: ExtensionAPI) {
 					return {
 						block: true,
 						reason:
-							`Blocked by deps-bot policy: "${label}" is not allowed in the agent sandbox. ` +
+							`Blocked by sadoc policy: "${label}" is not allowed in the agent sandbox. ` +
 							`The orchestrator owns all remote state (push, PR create, PR merge).`,
 					};
 				}

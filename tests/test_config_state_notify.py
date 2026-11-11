@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import textwrap
 
-from deps_bot import alerts, notify
-from deps_bot import config as config_mod
-from deps_bot import state as state_mod
+from sadoc import alerts, notify
+from sadoc import config as config_mod
+from sadoc import state as state_mod
 
 
 def write_config(tmp_path, body: str):
@@ -148,13 +148,13 @@ def test_alert_body_has_no_internal_detail():
     alert = alerts.pr_opened("owner/repo", 1, "http://x", "B", 2, ["a: 1 -> 2"])
     assert "model" not in alert.text.lower()
     assert "agent" not in alert.text.lower()
-    assert "deps-bot" not in alert.text.lower()
+    assert "sadoc" not in alert.text.lower()
     assert alert.dedupe_key
 
 
 def test_notify_accepts_a_logger_with_the_standard_signature():
     """The worker calls log(message, repo=..., level=..., data=...)."""
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     calls = []
 
@@ -171,7 +171,7 @@ def test_notify_accepts_a_logger_with_the_standard_signature():
 
 def test_notify_survives_a_broken_logger():
     """A logging failure must never abort the pipeline."""
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     def broken_log(*args, **kwargs):
         raise RuntimeError("logger exploded")
@@ -183,7 +183,7 @@ def test_notify_survives_a_broken_logger():
 
 
 def test_notify_survives_a_logger_with_the_wrong_signature():
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     worker.log = lambda message: None  # no keyword arguments at all
@@ -192,7 +192,7 @@ def test_notify_survives_a_logger_with_the_wrong_signature():
 
 
 def test_notify_returns_failed_when_the_backend_fails():
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     class BrokenBackend(notify.Backend):
         def send(self, message):
@@ -215,7 +215,7 @@ class _FakeGh:
 
 
 def test_failed_job_ids_parses_both_link_shapes():
-    from deps_bot.gh import Gh
+    from sadoc.gh import Gh
 
     gh = Gh.__new__(Gh)
     gh.pr_checks = lambda o, r, n: [
@@ -228,7 +228,7 @@ def test_failed_job_ids_parses_both_link_shapes():
 
 def test_pr_merge_uses_a_strategy_flag():
     """`gh pr merge` takes -s/--squash, not --merge-method."""
-    from deps_bot.gh import Gh
+    from sadoc.gh import Gh
 
     recorded = {}
 

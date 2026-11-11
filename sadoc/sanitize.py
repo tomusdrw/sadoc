@@ -45,6 +45,8 @@ LEAK_MARKERS: list[tuple[str, str, str]] = [
     (r"\bthe (?:local |open[- ]source )?llm\b", "the model", "the change"),
     (r"\b(?:an?|the) (?:large )?language model\b", "the model", "the change"),
     (r"\bdeps[-_ ]?bot\b", "deps-bot", ""),
+    # The tool's own name must never reach a pull request.
+    (r"\bsadoc\b", "sadoc", ""),
     (r"\bclaude\b", "claude", ""),
     (r"\bgpt[- ]?\d", "gpt", ""),
     (r"\bqwen[\w.\-]*", "qwen", ""),

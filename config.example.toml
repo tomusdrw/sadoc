@@ -1,11 +1,11 @@
-# deps-bot configuration
+# sadoc configuration
 #
-# Copy to ~/.config/deps-bot/config.toml and edit:
+# Copy to ~/.config/sadoc/config.toml and edit:
 #
-#   mkdir -p ~/.config/deps-bot
-#   cp config.example.toml ~/.config/deps-bot/config.toml
+#   mkdir -p ~/.config/sadoc
+#   cp config.example.toml ~/.config/sadoc/config.toml
 #
-# Secrets do NOT belong in this file. Put them in ~/.config/deps-bot/secrets.env
+# Secrets do NOT belong in this file. Put them in ~/.config/sadoc/secrets.env
 # (chmod 600) and reference the environment variable name here. The systemd
 # unit loads that file; the agent sandbox scrubs those variables so the model
 # can never read them.
@@ -100,25 +100,36 @@ base_url = "http://127.0.0.1:8080/v1"
 #
 # Resend:  https://resend.com/api-keys
 #   RESEND_API_KEY=re_...            (put this in secrets.env)
-#   from    must be a verified Resend domain, e.g. "deps-bot@example.com"
+#   from    must be a verified Resend domain, e.g. "sadoc@example.com"
 #
 # SMTP: direct submission over port 587, no local mail server needed.
 #   SMTP_APP_PASSWORD=...            (put this in secrets.env)
 [notify]
 enabled = false
 backend = "resend"
-from    = "deps-bot@example.com"
+from    = "sadoc@example.com"
 to      = ["you@example.com"]
 resend_api_key_env = "RESEND_API_KEY"
+
+# How long before a pull request gets a nudge.
+review_reminder_hours = 24
+merge_reminder_hours  = 48
 
 # smtp_host = "smtp.gmail.com"
 # smtp_port = 587
 # smtp_user = "you@example.com"
 # smtp_password_env = "SMTP_APP_PASSWORD"
 
-# How long before a pull request gets a nudge.
-review_reminder_hours = 24
-merge_reminder_hours  = 48
+# The voice Sadoc writes in -----------------------------------------------
+# Used in the emails, in the GitHub comments, and (lightly) in pull request
+# descriptions. The name never appears in a pull request - the description only
+# gets a single closing line, so it still reads like one a person wrote.
+[persona]
+name          = "Sadoc"
+tagline       = "news from the western shore"
+subject_prefix = "[Sadoc]"
+pr_flourish   = true
+comment_signoff = "\n\n— Sadoc"
 
 # Per-repository overrides ---------------------------------------------------
 # The local verification command is the gate that runs before a pull request

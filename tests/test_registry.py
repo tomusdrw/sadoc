@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from deps_bot import registry
+from sadoc import registry
 
 
 def _fake_tags(monkeypatch, names: list[str]) -> None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly runner for deps-bot.
+# Nightly runner for sadoc.
 #
 #   1. scan   - refresh the outdated-dependency inventory
 #   2. run    - pick the highest-value repos and open PRs
@@ -13,15 +13,15 @@ set -uo pipefail
 # The install directory is derived from the script's own location, so the
 # nightly runner works wherever it was installed.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPSBOT_HOME="${DEPSBOT_HOME:-$(dirname "$SCRIPT_DIR")}"
-DEPSBOT_BIN="$DEPSBOT_HOME/bin/deps-bot"
-CONFIG="${DEPSBOT_CONFIG:-$HOME/.config/deps-bot/config.toml}"
-LOG_DIR="${DEPSBOT_LOG_DIR:-$HOME/.local/share/deps-bot/logs}"
-REPORT_DIR="${DEPSBOT_REPORT_DIR:-$HOME/.local/share/deps-bot/reports}"
-STATE_DB="${DEPSBOT_DB:-$HOME/.local/share/deps-bot/state.db}"
+SADOC_HOME="${SADOC_HOME:-$(dirname "$SCRIPT_DIR")}"
+SADOC_BIN="$SADOC_HOME/bin/sadoc"
+CONFIG="${SADOC_CONFIG:-$HOME/.config/sadoc/config.toml}"
+LOG_DIR="${SADOC_LOG_DIR:-$HOME/.local/share/sadoc/logs}"
+REPORT_DIR="${SADOC_REPORT_DIR:-$HOME/.local/share/sadoc/reports}"
+STATE_DB="${SADOC_DB:-$HOME/.local/share/sadoc/state.db}"
 
-if [ ! -x "$DEPSBOT_BIN" ]; then
-  echo "deps-bot not found at $DEPSBOT_BIN" >&2
+if [ ! -x "$SADOC_BIN" ]; then
+  echo "sadoc not found at $SADOC_BIN" >&2
   exit 1
 fi
 
@@ -77,15 +77,15 @@ log "window $WINDOW - ${DELTA_MIN} min remaining of ${TOTAL_MIN}"
 log "deadline $(date -d "@$DEADLINE" +%H:%M:%S)"
 
 log "=== scan ==="
-run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
 
 log "=== run ==="
-run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" || true
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" || true
 
 log "=== monitor ==="
-run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
 
 log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"
-"$DEPSBOT_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" 2>&1 | tee -a "$LOG"
+"$SADOC_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" 2>&1 | tee -a "$LOG"
 log "report written to $REPORT"

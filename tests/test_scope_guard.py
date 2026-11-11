@@ -11,8 +11,8 @@ import subprocess
 
 import pytest
 
-from deps_bot.detect import Update
-from deps_bot.gitops import Git, _split_patch
+from sadoc.detect import Update
+from sadoc.gitops import Git, _split_patch
 
 
 def _update(name, manifest="go.mod"):
@@ -60,7 +60,7 @@ def test_out_of_scope_detects_a_language_directive(repo):
         "\tgithub.com/a-h/templ v0.3.1100\n"
         "\tgithub.com/go-chi/chi/v5 v5.5.0\n)\n"
     )
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     updates = [_update("github.com/a-h/templ"), _update("github.com/go-chi/chi/v5")]
@@ -75,7 +75,7 @@ def test_out_of_scope_ignores_comments(repo):
         "\tgithub.com/a-h/templ v0.3.1100\n"
         "\tgithub.com/go-chi/chi/v5 v5.5.0\n)\n"
     )
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     updates = [_update("github.com/a-h/templ"), _update("github.com/go-chi/chi/v5")]
@@ -88,7 +88,7 @@ def test_revert_restores_the_directive_and_keeps_the_updates(repo):
         "\tgithub.com/a-h/templ v0.3.1100\n"
         "\tgithub.com/go-chi/chi/v5 v5.5.0\n)\n"
     )
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     updates = [_update("github.com/a-h/templ"), _update("github.com/go-chi/chi/v5")]
@@ -105,7 +105,7 @@ def test_revert_restores_the_directive_and_keeps_the_updates(repo):
 def test_out_of_scope_accepts_a_namespaced_package(repo):
     """A Docker image is "library/node" in the registry but "node" in the file."""
     (repo.path / "Dockerfile").write_text("FROM node:20-bullseye-slim\n")
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     update = Update(
@@ -126,7 +126,7 @@ def test_out_of_scope_accepts_a_namespaced_package(repo):
 def test_out_of_scope_does_not_match_a_scoped_package_by_its_tail(repo):
     """`@types/node` must not match a line that merely says "node"."""
     (repo.path / "package.json").write_text('{"devDependencies": {"@types/node": "^26.1.1"}}\n')
-    from deps_bot.pipeline import Worker
+    from sadoc.pipeline import Worker
 
     worker = Worker.__new__(Worker)
     update = Update(

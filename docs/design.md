@@ -1,6 +1,6 @@
 # Design notes
 
-Background and rationale for the parts of deps-bot that are not obvious from the
+Background and rationale for the parts of sadoc that are not obvious from the
 code. Most of this document exists because something was learned the hard way.
 
 ---

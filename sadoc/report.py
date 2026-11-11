@@ -1,4 +1,4 @@
-"""Markdown digest of a deps-bot run."""
+"""Markdown digest of a sadoc run."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .state import State
 
 def build(state: State) -> str:
     now = time.strftime("%Y-%m-%d %H:%M")
-    lines = [f"# deps-bot report - {now}", ""]
+    lines = [f"# sadoc report - {now}", ""]
 
     rows = state.conn.execute(
         "SELECT repo, COUNT(*) n, "
@@ -91,7 +91,7 @@ def build(state: State) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Write a markdown digest of a deps-bot run.")
+    parser = argparse.ArgumentParser(description="Write a markdown digest of a sadoc run.")
     parser.add_argument("--config", default=None)
     parser.add_argument("--db", default=None)
     parser.add_argument("--out", default=None)

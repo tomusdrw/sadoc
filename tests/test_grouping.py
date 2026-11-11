@@ -6,8 +6,8 @@ same file have to be in the same pull request, otherwise the branches conflict.
 
 from __future__ import annotations
 
-from deps_bot import pipeline
-from deps_bot.detect import Update
+from sadoc import pipeline
+from sadoc.detect import Update
 
 
 def make(

@@ -111,16 +111,16 @@ class PiSession:
                 if key in SECRET_PATTERNS or key.endswith("_API_KEY") or key in self._extra_secrets:
                     env.pop(key, None)
         env["PI_CODING_AGENT_DIR"] = str(self.agent_dir)
-        env["DEPSBOT_WORKSPACE"] = self.cwd
-        env["DEPSBOT_REAL_HOME"] = str(Path.home())
-        env["DEPSBOT_ALLOW_NET"] = "1" if self._allow_network else "0"
+        env["SADOC_WORKSPACE"] = self.cwd
+        env["SADOC_REAL_HOME"] = str(Path.home())
+        env["SADOC_ALLOW_NET"] = "1" if self._allow_network else "0"
         # A persistent cache for the package managers, so a run does not
         # re-download the whole registry.
         cache_dir = Path(
-            os.environ.get("DEPSBOT_CACHE_DIR", Path.home() / ".cache" / "deps-bot" / "toolcache")
+            os.environ.get("SADOC_CACHE_DIR", Path.home() / ".cache" / "sadoc" / "toolcache")
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
-        env["DEPSBOT_CACHE_DIR"] = str(cache_dir)
+        env["SADOC_CACHE_DIR"] = str(cache_dir)
         return env
 
     def _write_models_json(self) -> None:

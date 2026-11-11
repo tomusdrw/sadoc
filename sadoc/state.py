@@ -1,4 +1,4 @@
-"""Persistent state for deps-bot (SQLite).
+"""Persistent state for sadoc (SQLite).
 
 Everything the nightly run needs to resume lives here: which repos are in scope,
 which dependency updates were detected, which PRs are open, and what happened in
@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DEFAULT_DB = Path.home() / ".local" / "share" / "deps-bot" / "state.db"
+DEFAULT_DB = Path.home() / ".local" / "share" / "sadoc" / "state.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (

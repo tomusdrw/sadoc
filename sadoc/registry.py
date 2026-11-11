@@ -13,9 +13,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-CACHE_DIR = Path.home() / ".cache" / "deps-bot"
+CACHE_DIR = Path.home() / ".cache" / "sadoc"
 CACHE_TTL = 6 * 3600
-UA = "deps-bot/1.0"
+UA = "sadoc/1.0"
 
 # Ecosystems where the "latest" version is a moving tag we should not chase.
 _SKIP_LATEST_TAGS = {"latest", "stable", "main", "master", "nightly", "edge", "canary"}

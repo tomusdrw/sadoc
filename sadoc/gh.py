@@ -40,6 +40,11 @@ class Gh:
             )
         return proc.stdout
 
+    def run_status(self, *args: str, timeout: int = 120) -> tuple[int, str]:
+        """Run a gh command and report the exit code instead of raising."""
+        proc = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
     def api(self, endpoint: str, method: str = "GET", check: bool = True, **params) -> object:
         """Call the GitHub REST or GraphQL API. `params` become query params for
         GET and body fields otherwise.
@@ -291,6 +296,10 @@ class Gh:
 
     def pr_issue_comments(self, owner: str, repo: str, number: int) -> list[dict]:
         return self.api_paginate(f"repos/{owner}/{repo}/issues/{number}/comments")
+
+    def pr_comment(self, owner: str, repo: str, number: int, body: str) -> dict:
+        """Post a comment on a pull request."""
+        return self.api(f"repos/{owner}/{repo}/issues/{number}/comments", method="POST", body=body)
 
     def pr_reviews(self, owner: str, repo: str, number: int) -> list[dict]:
         return self.api_paginate(f"repos/{owner}/{repo}/pulls/{number}/reviews")

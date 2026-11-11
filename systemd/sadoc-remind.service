@@ -1,0 +1,11 @@
+[Unit]
+Description=Send sadoc reminders about unattended pull requests
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/sadoc/bin/sadoc remind
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=PI_CODING_AGENT_DIR=%h/.cache/sadoc/pi-agent
+EnvironmentFile=-%h/.config/sadoc/secrets.env
+TimeoutStartSec=15min
+Nice=10

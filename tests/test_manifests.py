@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deps_bot import lockfiles, manifests
+from sadoc import lockfiles, manifests
 
 
 def test_parse_package_json():

@@ -6,7 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [1.0.0]
 
-First public release.
+First public release. Named after Sadoc, the sailor of the west sea from the First
+Age - the companion to Nori, the Dwarf of Númenóre who built his boats.
 
 ### Added
 
@@ -40,6 +41,15 @@ First public release.
   persistent queue in SQLite, and systemd units for both the nightly run and the
   morning reminders.
 - **A report** of what is outdated, what is open, and what needs attention.
+- **Build discovery.** With no verification command configured, the agent reads the
+  CI configuration and works out the build and test commands itself, including any
+  code generation step, and remembers the result.
+- **A scope guard.** Manifest edits that are not one of the requested dependencies
+  are reverted, so a language or toolchain directive is never changed by accident.
+- **Dependabot handover.** Dependabot version updates can be switched off in the
+  repositories this tool handles, so the two do not compete.
+- **A voice.** Emails and GitHub comments are signed and written in Sadoc's voice;
+  pull request descriptions carry a single closing line and nothing else.
 
 ### Notes
 

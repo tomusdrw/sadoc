@@ -1,4 +1,4 @@
-"""Configuration loading for deps-bot."""
+"""Configuration loading for sadoc."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CONFIG = Path.home() / ".config" / "deps-bot" / "config.toml"
+DEFAULT_CONFIG = Path.home() / ".config" / "sadoc" / "config.toml"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -25,10 +25,10 @@ class ModelSpec:
 class Config:
     owner: str = ""
     owners: list[str] = field(default_factory=list)
-    state_db: Path = Path.home() / ".local" / "share" / "deps-bot" / "state.db"
-    workdir: Path = Path.home() / ".cache" / "deps-bot" / "work"
-    agent_dir: Path = Path.home() / ".cache" / "deps-bot" / "pi-agent"
-    report_dir: Path = Path.home() / ".local" / "share" / "deps-bot" / "reports"
+    state_db: Path = Path.home() / ".local" / "share" / "sadoc" / "state.db"
+    workdir: Path = Path.home() / ".cache" / "sadoc" / "work"
+    agent_dir: Path = Path.home() / ".cache" / "sadoc" / "pi-agent"
+    report_dir: Path = Path.home() / ".local" / "share" / "sadoc" / "reports"
 
     # schedule
     window_start: str = "01:00"
@@ -69,6 +69,12 @@ class Config:
         }
     )
 
+    # the voice Sadoc writes in
+    persona: dict = field(default_factory=dict)
+
+    # stop Dependabot competing with this tool in the repositories it handles
+    disable_dependabot: bool = True
+
     models: dict[str, ModelSpec] = field(default_factory=dict)
     default_model: ModelSpec = field(default_factory=ModelSpec)
 
@@ -104,7 +110,7 @@ def load(path: str | Path | None = None) -> Config:
 
     cfg.owner = raw.get("owner", cfg.owner)
     cfg.owners = list(raw.get("owners", []) or [])
-    cfg.dry_run = bool(raw.get("dry_run", os.environ.get("DEPSBOT_DRY_RUN") == "1"))
+    cfg.dry_run = bool(raw.get("dry_run", os.environ.get("SADOC_DRY_RUN") == "1"))
 
     for key in ("state_db", "workdir", "agent_dir", "report_dir"):
         if key in raw:
@@ -138,16 +144,19 @@ def load(path: str | Path | None = None) -> Config:
     cfg.tier_b_major = bool(behaviour.get("tier_b_major", True))
     cfg.tier_c_security = bool(behaviour.get("tier_c_security", True))
 
+    cfg.persona = dict(raw.get("persona", {}) or {})
+    cfg.disable_dependabot = bool(raw.get("disable_dependabot", True))
+
     cfg.notify = dict(raw.get("notify", {}) or {})
     cfg.notify.setdefault("enabled", False)
     cfg.notify.setdefault("backend", "none")
     cfg.notify.setdefault("review_reminder_hours", 24)
     cfg.notify.setdefault("merge_reminder_hours", 48)
     # Env overrides, handy for testing without sending real mail.
-    override = os.environ.get("DEPSBOT_NOTIFY_BACKEND")
+    override = os.environ.get("SADOC_NOTIFY_BACKEND")
     if override:
         cfg.notify["backend"] = override
-    if os.environ.get("DEPSBOT_NOTIFY_ENABLED") in ("0", "false", "no"):
+    if os.environ.get("SADOC_NOTIFY_ENABLED") in ("0", "false", "no"):
         cfg.notify["enabled"] = False
 
     model_raw = raw.get("model", {})

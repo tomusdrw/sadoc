@@ -101,7 +101,7 @@ class ResendBackend(Backend):
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "deps-bot/1.0",
+                "User-Agent": "sadoc/1.0",
             },
             method="POST",
         )
@@ -146,7 +146,7 @@ class SmtpBackend(Backend):
     def send(self, message: Message) -> str:
         msg = EmailMessage()
         msg["Subject"] = message.subject
-        msg["From"] = message.from_addr or self.from_addr or self.user or "deps-bot"
+        msg["From"] = message.from_addr or self.from_addr or self.user or "sadoc"
         msg["To"] = ", ".join(message.to)
         for key, value in (message.headers or {}).items():
             msg[key] = value
@@ -182,7 +182,7 @@ def build_backend(cfg_notify: dict) -> Backend:
             raise NotifyError(
                 f"notify backend is 'resend' but ${key_env} is not set in the environment"
             )
-        return ResendBackend(key, from_addr or "deps-bot@localhost")
+        return ResendBackend(key, from_addr or "sadoc@localhost")
     if backend == "smtp":
         pw_env = cfg_notify.get("smtp_password_env") or "SMTP_PASSWORD"
         return SmtpBackend(
@@ -228,7 +228,7 @@ class Notifier:
             html=getattr(alert, "html", None),
             to=self.to,
             from_addr=self.from_addr,
-            headers=alert.headers or {},
+            headers=getattr(alert, "headers", {}) or {},
         )
         try:
             sent_id = self.backend.send(message)
