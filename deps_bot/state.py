@@ -97,6 +97,17 @@ CREATE TABLE IF NOT EXISTS pr_comments (
     PRIMARY KEY (repo, pr_number, comment_id)
 );
 
+CREATE TABLE IF NOT EXISTS repo_setup (
+    repo TEXT NOT NULL,
+    verify_command TEXT,
+    prerequisites TEXT,
+    notes TEXT,
+    status TEXT,
+    created_at REAL,
+    updated_at REAL,
+    PRIMARY KEY (repo)
+);
+
 CREATE TABLE IF NOT EXISTS pr_details (
     repo TEXT NOT NULL,
     number INTEGER NOT NULL,
@@ -260,6 +271,30 @@ class State:
         return self.conn.execute(
             "SELECT * FROM prs WHERE repo=? AND branch=? AND state='open'", (repo, branch)
         ).fetchone()
+
+    # ------------------------------------------------------- repo setup
+    def record_setup(
+        self,
+        repo: str,
+        verify_command: str | None,
+        prerequisites: str = "",
+        notes: str = "",
+        status: str = "ok",
+    ) -> None:
+        """Remember how to build a repository, so it only has to be worked out once."""
+        now = time.time()
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO repo_setup (repo,verify_command,prerequisites,notes,status,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(repo) DO UPDATE SET verify_command=excluded.verify_command,"
+                "prerequisites=excluded.prerequisites, notes=excluded.notes,"
+                "status=excluded.status, updated_at=excluded.updated_at",
+                (repo, verify_command, prerequisites[:1000], notes[:2000], status, now, now),
+            )
+
+    def setup(self, repo: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM repo_setup WHERE repo=?", (repo,)).fetchone()
 
     # ------------------------------------------------------- pr details
     def record_pr_details(self, repo: str, number: int, **fields) -> None:

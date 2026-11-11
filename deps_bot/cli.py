@@ -22,6 +22,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # running as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from deps_bot import alerts as alerts_mod  # noqa: E402
 from deps_bot import config as config_mod  # noqa: E402
 from deps_bot import detect, pipeline  # noqa: E402
 from deps_bot.gh import Gh, GhError  # noqa: E402
@@ -62,6 +63,9 @@ def cmd_scan(args, cfg, gh, state) -> int:
     _log("resolving scope ...")
     scoped = detect.resolve_scope(cfg, gh, state)
     _log(f"{len(scoped)} repos in scope")
+    worker = pipeline.Worker(
+        cfg, gh, state, log=_log, notifier=_make_notifier(cfg, state, cfg.dry_run)
+    )
 
     total = 0
     for entry in scoped:
@@ -72,6 +76,8 @@ def cmd_scan(args, cfg, gh, state) -> int:
             updates = pipeline.Worker(cfg, gh, state, log=_log).detect_repo(owner, name, branch)
         except GhError as exc:
             _log(f"  {repo}: scan failed: {exc}")
+            state.log(f"scan failed: {exc}", repo=repo, level="error")
+            worker.notify(alerts_mod.failure(repo, "detection", str(exc)))
             continue
         seen = set()
         for u in updates:
@@ -127,9 +133,16 @@ def cmd_run(args, cfg, gh, state) -> int:
     # Rank: security first, then how much is outdated, then staleness.
     candidates = []
     for entry in scoped:
-        updates = worker.detect_repo(
-            entry["owner"], entry["name"], gh.default_branch(entry["owner"], entry["name"])
-        )
+        try:
+            updates = worker.detect_repo(
+                entry["owner"], entry["name"], gh.default_branch(entry["owner"], entry["name"])
+            )
+        except Exception as exc:  # noqa: BLE001
+            detail = f"{type(exc).__name__}: {exc}"
+            _log(f"{entry['repo']}: scan failed: {detail}")
+            state.log(f"scan failed: {detail}", repo=entry["repo"], level="error")
+            worker.notify(alerts_mod.failure(entry["repo"], "detection", detail))
+            continue
         if not updates:
             continue
         groups = worker.build_groups(updates)

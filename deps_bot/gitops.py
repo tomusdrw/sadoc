@@ -16,6 +16,25 @@ class GitError(RuntimeError):
     pass
 
 
+def _split_patch(patch: str) -> tuple[str, list[str]]:
+    """Split a unified diff into its header and its hunks."""
+    header: list[str] = []
+    hunks: list[str] = []
+    current: list[str] | None = None
+    for line in patch.splitlines(keepends=True):
+        if line.startswith("@@"):
+            if current:
+                hunks.append("".join(current))
+            current = [line]
+        elif current is None:
+            header.append(line)
+        else:
+            current.append(line)
+    if current:
+        hunks.append("".join(current))
+    return "".join(header), hunks
+
+
 @dataclass
 class Git:
     path: Path
@@ -91,6 +110,52 @@ class Git:
     def checkout(self, ref: str) -> None:
         self._run("checkout", ref)
 
+    def clean(self) -> None:
+        """Remove untracked files and reset tracked ones."""
+        self._run("reset", "--hard", "HEAD")
+        self._run("clean", "-fdq")
+
+    def revert_lines(self, offenders: list[dict]) -> list[str]:
+        """Put individual changed lines back the way they were.
+
+        `offenders` is a list of {"file": path, "line": content}. The diff is
+        taken with zero context, so every hunk covers one contiguous change
+        and the offending ones can be reversed on their own.
+        """
+        by_file: dict[str, set[str]] = {}
+        for item in offenders:
+            by_file.setdefault(item["file"], set()).add(item["line"].strip())
+        reverted: list[str] = []
+        for path, lines in by_file.items():
+            patch = self._run("diff", "-U0", "--", path, check=False)
+            if not patch.strip():
+                continue
+            header, hunks = _split_patch(patch)
+            bad = []
+            for hunk in hunks:
+                changed = {
+                    ln[1:].strip()
+                    for ln in hunk.splitlines()
+                    if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))
+                }
+                if changed & lines:
+                    bad.append(hunk)
+            if not bad:
+                continue
+            reverse_patch = header + "".join(bad)
+            proc = subprocess.run(
+                ["git", "-C", str(self.path), "apply", "--reverse", "--unidiff-zero", "-"],
+                input=reverse_patch,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if proc.returncode != 0:
+                continue
+            reverted.extend(sorted(lines))
+        self.stage_all()
+        return reverted
+
     # -------------------------------------------------------------- state
     def status(self) -> str:
         return self._run("status", "--porcelain")
@@ -112,6 +177,10 @@ class Git:
         if staged:
             args.append("--cached")
         return self._run(*args, timeout=120)
+
+    def diff_for(self, path: str) -> str:
+        """The diff of a single file."""
+        return self._run("diff", "--", path, timeout=60)
 
     def diff_stat(self) -> str:
         return self._run("diff", "--stat", timeout=120)

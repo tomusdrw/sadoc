@@ -22,10 +22,11 @@ REMINDER_MERGE = "reminder_merge"
 BLOCKED = "blocked"
 AUTO_MERGED = "auto_merged"
 MERGED = "merged"
+FAILURE = "failure"
 NIGHTLY_SUMMARY = "nightly_summary"
 
 # Kinds that are worth waking up for, versus a daily digest.
-URGENT = {CI_FAILED, REVIEW_UNADDRESSED, BLOCKED, REVIEW_RECEIVED, AUTO_MERGED}
+URGENT = {CI_FAILED, REVIEW_UNADDRESSED, BLOCKED, REVIEW_RECEIVED, AUTO_MERGED, FAILURE}
 
 
 @dataclass
@@ -243,6 +244,23 @@ def merged_by_human(repo: str, number: int, url: str, tier: str) -> Alert:
         repo=repo,
         pr_number=number,
         dedupe_key=f"{MERGED}:{repo}#{number}",
+    )
+
+
+def failure(repo: str, stage: str, detail: str) -> Alert:
+    """Something went wrong during a run and a human needs to know."""
+    text, hbody = _body(
+        "Deps bot could not finish",
+        [("Repository", repo), ("Stage", stage)],
+        (detail or "no detail")[:2000],
+    )
+    return Alert(
+        FAILURE,
+        f"[deps-bot] Failed on {repo} ({stage})",
+        text,
+        html=hbody,
+        repo=repo,
+        dedupe_key=f"{FAILURE}:{repo}:{stage}:{int(time.time() // 86400)}",
     )
 
 

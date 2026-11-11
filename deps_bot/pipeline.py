@@ -283,8 +283,76 @@ class Worker:
 
     # ------------------------------------------------------------- verify
     def verify_command(self, repo: str) -> str | None:
+        """The command that builds and tests a repository.
+
+        In order of preference: an explicit override in the config, then the
+        command that was worked out automatically for this repository.
+        """
         override = (self.cfg.repos.get(repo) or {}).get("verify")
-        return override
+        if override:
+            return override
+        row = self.state.setup(repo)
+        if row is not None and row["verify_command"]:
+            return row["verify_command"]
+        return None
+
+    def discover_verify_command(self, owner: str, repo: str, branch: str) -> dict:
+        """Work out how to build and test a repository.
+
+        The agent reads the CI configuration, works out the commands - including
+        any code generation that has to happen first - runs them until they
+        work, and reports the single command to use.
+
+        Returns a dict with the command, the prerequisites and any notes.
+        """
+        result = {"verify_command": None, "prerequisites": "", "notes": "", "status": "unknown"}
+        try:
+            git = self.prepare_clone(owner, repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            result["status"] = "clone_failed"
+            result["notes"] = f"{type(exc).__name__}: {exc}"
+            return result
+
+        model = self.cfg.model_for("bump")
+        spec = PiModel(
+            name=f"depsbot-{model.provider}",
+            base_url=model.base_url,
+            model=model.model,
+            context=model.context,
+            max_tokens=model.max_tokens,
+            reasoning=model.reasoning,
+        )
+        session = PiSession(
+            cwd=git.path,
+            model=spec,
+            agent_dir=self.cfg.agent_dir,
+            allow_network=self.cfg.allow_network,
+            scrub_env=self.cfg.scrub_env,
+        )
+        try:
+            session.start()
+            prompt = load_prompt("prepare")
+            turn = session.prompt(prompt, timeout=3600)
+            fields = _parse_report(turn.text)
+            command = fields.get("VERIFY", "").strip()
+            if command.upper().startswith("NONE") or not command:
+                result["status"] = "no_command"
+                result["notes"] = fields.get("NOTES", "") or turn.text[:500]
+                result["prerequisites"] = fields.get("PREREQUISITES", "")
+                return result
+            # Never trust the model with a command that changes remote state.
+            if sanitize.contains_leak(command):
+                command = ""
+            result["verify_command"] = command or None
+            result["prerequisites"] = fields.get("PREREQUISITES", "")
+            result["notes"] = fields.get("NOTES", "")
+            result["status"] = "ok" if command else "no_command"
+        except Exception as exc:  # noqa: BLE001
+            result["status"] = "failed"
+            result["notes"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            session.close()
+        return result
 
     def run_verify(self, git: Git, repo: str, session: PiSession | None = None) -> tuple[bool, str]:
         cmd = self.verify_command(repo)
@@ -362,6 +430,40 @@ class Worker:
         return f"deps/{package}"
 
     # ---------------------------------------------------------- leak check
+    def _out_of_scope_changes(self, git: Git, updates: list[Update]) -> list[dict]:
+        """Find manifest edits that are not one of the requested updates.
+
+        The model occasionally "helpfully" bumps something that is not a
+        dependency - the Go language directive, a toolchain version, an
+        engines field. Those are decisions, not updates, and they can break the
+        build in ways the local verification does not catch (a newer `go`
+        directive than the CI image has, for example).
+        """
+        if not updates:
+            return []
+        names = {u.name.lower() for u in updates}
+        manifests = {u.manifest for u in updates}
+        offenders: list[dict] = []
+        for path in git.changed_files():
+            if path not in manifests:
+                continue
+            if path.endswith((".lock", ".sum", "-lock.json")):
+                continue
+            diff = git.diff_for(path)
+            for line in diff.splitlines():
+                if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
+                    continue
+                content = line[1:].strip()
+                if not content:
+                    continue
+                # Comments are free to move around.
+                if content.startswith(("#", "//", "*", "/*", "<!--", "--")):
+                    continue
+                if any(name in content.lower() for name in names):
+                    continue
+                offenders.append({"file": path, "line": content[:200]})
+        return offenders
+
     def _apply_labels(self, owner: str, repo: str, number: int, tier: str) -> None:
         """Label the pull request so it can be filtered on GitHub."""
         if not number:
@@ -397,15 +499,7 @@ class Worker:
         """
         if not report:
             return ""
-        fields: dict[str, str] = {}
-        for line in report.splitlines():
-            m = re.match(r"^\s*([A-Z][A-Z_]{2,}):\s*(.*)$", line)
-            if m:
-                fields[m.group(1)] = m.group(2).strip()
-            elif fields:
-                last = list(fields)[-1]
-                fields[last] = (fields[last] + " " + line.strip()).strip()
-
+        fields = _parse_report(report)
         note = fields.get("NOTES", "")
         skipped = fields.get("SKIPPED", "")
         if skipped and skipped.lower() not in ("none", "n/a", "-"):
@@ -486,7 +580,39 @@ class Worker:
 
         try:
             git = self.prepare_clone(owner, repo, default_branch)
-            git.create_branch(branch)
+
+            # --- work out how to build this project ---------------------
+            # The agent reads the CI configuration and works out the build and
+            # test commands itself, including any code generation step. The
+            # result is remembered, so this only happens once per repository.
+            if not self.verify_command(repo):
+                self._safe_log("working out how to build this project", repo=f"{owner}/{repo}")
+                setup = self.discover_verify_command(owner, repo, default_branch)
+                self.state.record_setup(
+                    f"{owner}/{repo}",
+                    setup["verify_command"],
+                    setup["prerequisites"],
+                    setup["notes"],
+                    setup["status"],
+                )
+                if setup["status"] != "ok" or not setup["verify_command"]:
+                    detail = setup["notes"] or setup["status"] or "unknown"
+                    if setup["prerequisites"]:
+                        detail += f" (needs: {setup['prerequisites']})"
+                    result.status = "failed"
+                    result.detail = f"could not work out how to build this project: {detail}"
+                    self._safe_log(result.detail, repo=f"{owner}/{repo}", level="error")
+                    self.state.end_attempt(attempt_id, "failed", result.detail)
+                    self.notify(alerts.failure(f"{owner}/{repo}", "build discovery", result.detail))
+                    return result
+                self._safe_log(f"build command: {setup['verify_command']}", repo=f"{owner}/{repo}")
+                # The discovery step may have left generated files behind.
+                # Reset to a pristine tree so they never end up in the commit.
+                git.checkout(default_branch)
+                git.clean()
+                git.create_branch(branch)
+            else:
+                git.create_branch(branch)
             result.changes = []
 
             model = self.cfg.model_for("migrate" if tier == TIER_B else "bump")
@@ -523,6 +649,22 @@ class Worker:
                     self.state.end_attempt(attempt_id, "skipped", result.detail)
                     return result
 
+                # --- keep the change in scope ---------------------------
+                offenders = self._out_of_scope_changes(git, updates)
+                if offenders:
+                    self._safe_log(
+                        "reverting edits that are not part of the update set: "
+                        + "; ".join(f"{o['file']}: {o['line'][:60]}" for o in offenders[:5]),
+                        repo=f"{owner}/{repo}",
+                    )
+                    git.revert_lines(offenders)
+                    result.changes = git.changed_files()
+                    if not result.changes:
+                        result.status = "skipped"
+                        result.detail = "the model only made out-of-scope changes"
+                        self.state.end_attempt(attempt_id, "skipped", result.detail)
+                        return result
+
                 # --- local verify ----------------------------------------
                 ok, output = self.run_verify(git, repo, session)
                 if not ok:
@@ -538,6 +680,9 @@ class Worker:
                     result.status = "failed"
                     result.detail = "local verification still failing after migration"
                     self.state.end_attempt(attempt_id, "failed", result.detail)
+                    self.notify(
+                        alerts.failure(f"{owner}/{repo}", "local verification", output[-1500:])
+                    )
                     return result
 
                 if dry_run:
@@ -660,6 +805,17 @@ class Worker:
                     result.ci_state = ci_state
                     self.state.log(f"CI state after fix: {ci_state}", repo=f"{owner}/{repo}")
 
+                if ci_state == "fail":
+                    self.notify(
+                        alerts.ci_failed(
+                            f"{owner}/{repo}",
+                            number,
+                            url,
+                            tier,
+                            "CI is failing on this pull request and the bot could not fix it.",
+                        )
+                    )
+
                 # --- auto-merge (tier A only) ----------------------------
                 if not dry_run:
                     ok, why = self.may_auto_merge(owner, repo, number, tier)
@@ -706,6 +862,7 @@ class Worker:
                 data={"traceback": detail[-4000:]},
             )
             self.state.end_attempt(attempt_id, "failed", detail)
+            self.notify(alerts.failure(f"{owner}/{repo}", "pipeline", detail[-1500:]))
             return result
 
     def _pr_number(self, url: str) -> int | None:
@@ -1121,6 +1278,24 @@ def _age_hours(created_at: str) -> float:
         return max(0.0, (datetime.now(UTC) - stamp).total_seconds() / 3600)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _parse_report(report: str) -> dict[str, str]:
+    """Parse the model's structured report (`KEY: value` lines).
+
+    A value may continue on the following lines, which are folded in.
+    """
+    fields: dict[str, str] = {}
+    if not report:
+        return fields
+    for line in report.splitlines():
+        m = re.match(r"^\s*([A-Z][A-Z_]{2,}):\s*(.*)$", line)
+        if m:
+            fields[m.group(1)] = m.group(2).strip()
+        elif fields:
+            last = list(fields)[-1]
+            fields[last] = (fields[last] + " " + line.strip()).strip()
+    return fields
 
 
 def _default_log(
