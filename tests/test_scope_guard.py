@@ -8,7 +8,6 @@ not updates, and they break builds in ways local verification does not catch.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
