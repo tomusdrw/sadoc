@@ -1247,7 +1247,7 @@ class Worker:
                 self.notify(alerts.merged_by_human(repo, number, view.get("url") or "", tier))
             return f"PR is {pr_state.lower()}"
 
-        checks = self.gh.pr_checks(owner, name, number)
+        checks = self._current_checks(owner, name, number)
         buckets = [c.get("bucket") for c in checks]
         ci_state = "none"
         if any(b in ("fail", "cancel") for b in buckets):
@@ -1265,6 +1265,12 @@ class Worker:
             updated_at=time.time(),
             last_checked=time.time(),
         )
+
+        # A pull request that has gone green can merge itself.
+        if ci_state == "pass":
+            outcome = self.maybe_auto_merge(owner, name, number, tier)
+            if outcome == "auto-merged":
+                return "auto-merged"
 
         comments = self.collect_review_comments(owner, name, number)
         known = self.state.known_comment_ids(repo, number)

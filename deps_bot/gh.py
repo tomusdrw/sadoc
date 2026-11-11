@@ -272,10 +272,18 @@ class Gh:
     def pr_merge(
         self, owner: str, repo: str, number: int, method: str = "squash", delete_branch: bool = True
     ) -> str:
-        args = ["pr", "merge", str(number), "--repo", f"{owner}/{repo}", "--merge-method", method]
+        """Merge a pull request.
+
+        `gh pr merge` takes a strategy flag (-s/--squash, -m/--merge,
+        -r/--rebase), not a --merge-method option.
+        """
+        flag = {"squash": "--squash", "merge": "--merge", "rebase": "--rebase"}.get(
+            method, "--squash"
+        )
+        args = ["pr", "merge", str(number), "--repo", f"{owner}/{repo}", flag]
         if delete_branch:
             args.append("--delete-branch")
-        return self.run(*args, timeout=180)
+        return self.run(*args, timeout=300)
 
     # ---------------------------------------------------------- reviews
     def pr_review_comments(self, owner: str, repo: str, number: int) -> list[dict]:

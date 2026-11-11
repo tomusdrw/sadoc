@@ -224,3 +224,20 @@ def test_failed_job_ids_parses_both_link_shapes():
         {"bucket": "pass", "link": "https://github.com/o/r/actions/runs/1/job/444"},
     ]
     assert gh.failed_job_ids("o", "r", 1) == ["222", "333"]
+
+
+def test_pr_merge_uses_a_strategy_flag():
+    """`gh pr merge` takes -s/--squash, not --merge-method."""
+    from deps_bot.gh import Gh
+
+    recorded = {}
+
+    class _Gh(Gh):
+        def run(self, *args, **kwargs):
+            recorded["args"] = args
+            return ""
+
+    gh = _Gh()
+    gh.pr_merge("o", "r", 1)
+    assert "--squash" in recorded["args"]
+    assert "--merge-method" not in recorded["args"]
