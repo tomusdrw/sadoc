@@ -20,6 +20,10 @@ a reminder if you forget about it.
 The agent runs entirely on **your** hardware against a **local** model. It needs a
 GitHub token to push, but the model itself never holds one.
 
+Together with [Nori](https://github.com/tomusdrw/nori), named after fellow Harfoot
+Elanor "Nori" Brandyfoot, it forms a suite of self-hosted development tools: Sadoc
+keeps dependencies up to date, while Nori deploys and manages Docker-based services.
+
 ```
 scan      find outdated dependencies          (deterministic, no model involved)
 run       bump -> verify -> open PR -> fix CI
