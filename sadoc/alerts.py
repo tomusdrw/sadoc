@@ -27,6 +27,7 @@ AUTO_MERGED = "auto_merged"
 MERGED = "merged"
 RELEASE_DUE = "release_due"
 BRANCH_FIXED = "branch_fixed"
+UNSUPPORTED_ECOSYSTEM = "unsupported_ecosystem"
 FAILURE = "failure"
 NIGHTLY_SUMMARY = "nightly_summary"
 
@@ -420,6 +421,53 @@ def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) 
         repo=repo,
         dedupe_key=f"{FAILURE}:{repo}:{stage}:{int(time.time() // 86400)}",
         heading="Something went wrong",
+        persona=p,
+    )
+
+
+def unsupported_ecosystem(
+    repo: str,
+    languages: list[str],
+    manifests: list[str],
+    note: str = "",
+    also_supported: bool = False,
+    persona: Persona | None = None,
+) -> Alert:
+    """A repository uses something Sadoc does not know how to update."""
+    p = persona or Persona()
+    blocks = _rows(
+        ("Repository", repo),
+        ("Language", ", ".join(languages)),
+        ("Found", ", ".join(f"`{m}`" for m in manifests)),
+    )
+    if note:
+        blocks.append(Block(kind="paragraph", value=note))
+    if also_supported:
+        blocks.append(
+            Block(
+                kind="note",
+                tone="warn",
+                value="I cannot update these yet. The rest of the repository is still "
+                "looked after, and nothing is broken by this.",
+            )
+        )
+    else:
+        blocks.append(
+            Block(
+                kind="note",
+                tone="warn",
+                value="I cannot update this repository yet. Nothing is broken by this - "
+                "it simply will not be looked after.",
+            )
+        )
+    return Alert(
+        UNSUPPORTED_ECOSYSTEM,
+        p.subject(f"I cannot look after {repo} yet"),
+        blocks,
+        repo=repo,
+        dedupe_key=f"{UNSUPPORTED_ECOSYSTEM}:{repo}",
+        heading="A language I do not know",
+        footer=p.signature(),
         persona=p,
     )
 

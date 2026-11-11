@@ -48,6 +48,9 @@ Age - the companion to Nori, the Dwarf of Númenóre who built his boats.
   are reverted, so a language or toolchain directive is never changed by accident.
 - **Dependabot handover.** Dependabot version updates can be switched off in the
   repositories this tool handles, so the two do not compete.
+- **Unsupported ecosystems are reported.** A repository built with Zig, Elixir,
+  Gradle or any of two dozen other languages is now said out loud, by email,
+  rather than passed over in silence.
 - **A voice.** Emails and GitHub comments are signed and written in Sadoc's voice;
   pull request descriptions carry a single closing line and nothing else.
 - **GitHub Actions and the runtimes inside them.** The actions a workflow uses are
@@ -60,6 +63,9 @@ Age - the companion to Nori, the Dwarf of Númenóre who built his boats.
   branch - and you are nudged when the version moves past what has been published.
 - **Dependabot handover.** Dependabot version updates can be switched off in the
   repositories this tool handles, so the two do not compete.
+- **Unsupported ecosystems are reported.** A repository built with Zig, Elixir,
+  Gradle or any of two dozen other languages is now said out loud, by email,
+  rather than passed over in silence.
 
 ### Notes
 

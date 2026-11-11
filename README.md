@@ -65,6 +65,25 @@ Supported ecosystems: **npm**, **pnpm**, **yarn**, **Cargo**, **pip/poetry/uv**,
 **Go modules**, **GitHub Actions**, plus `Dockerfile` base images and
 `composer.json`.
 
+### Ecosystems it does not handle
+
+Sadoc knows about a good many more than it can update: Zig, Elixir, Erlang,
+Ruby, Maven, Gradle, sbt, CMake, Bazel, Meson, .NET, Swift, Dart, Haskell,
+Clojure, Julia, Nim, Crystal, Lua, Deno, vcpkg and Conan.
+
+When a repository uses one of those, you are told - once, by email - rather than
+it being passed over in silence. A repository built with a language Sadoc does
+not understand would otherwise look exactly like a repository with nothing to
+update.
+
+Only a manifest at the top level counts. A `docs/Gemfile` is a side project, not
+the repository, and a `Makefile` says how to build rather than what to depend
+on.
+
+To add support for one, the ecosystem needs a manifest parser in
+`sadoc/manifests.py`, a registry lookup in `sadoc/registry.py`, and an entry in
+`sadoc/ecosystems.py`.
+
 ---
 
 ## Install

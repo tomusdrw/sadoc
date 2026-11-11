@@ -24,7 +24,7 @@ if __package__ in (None, ""):  # running as a script
 
 from sadoc import alerts as alerts_mod  # noqa: E402
 from sadoc import config as config_mod  # noqa: E402
-from sadoc import detect, pipeline, release_check  # noqa: E402
+from sadoc import detect, ecosystems, pipeline, release_check  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from sadoc.state import State  # noqa: E402
@@ -58,6 +58,37 @@ def _make_notifier(cfg, state, dry_run: bool):
     return Notifier(backend, state=state, dry_run=dry_run, to=to, from_addr=ncfg.get("from"))
 
 
+def name_of(entry: dict) -> str:
+    return entry["name"]
+
+
+def _report_unsupported(worker, gh, owner: str, name: str, repo: str, state, args) -> None:
+    """Tell the human when a repository uses an ecosystem Sadoc cannot update."""
+    try:
+        branch = gh.default_branch(owner, name)
+        tree = gh.repo_tree(owner, name, branch)
+    except Exception:  # noqa: BLE001
+        return
+    paths = [e.get("path", "") for e in tree]
+    hits = ecosystems.unsupported(paths)
+    if not hits:
+        return
+    supported = [h for h in ecosystems.detect(paths) if h.supported]
+    languages = sorted({h.ecosystem.label for h in hits})
+    manifests = sorted({h.manifest for h in hits})
+    _log(f"  {repo}: {', '.join(languages)} is not supported yet")
+    worker.notify(
+        alerts_mod.unsupported_ecosystem(
+            repo,
+            languages,
+            manifests,
+            ecosystems.describe(hits),
+            also_supported=bool(supported),
+            persona=worker.persona,
+        )
+    )
+
+
 # ------------------------------------------------------------------- scan
 def cmd_scan(args, cfg, gh, state) -> int:
     _log("resolving scope ...")
@@ -69,8 +100,11 @@ def cmd_scan(args, cfg, gh, state) -> int:
 
     total = 0
     for entry in scoped:
-        owner, name = entry["owner"], entry["name"]
+        owner, name = entry["owner"], name_of(entry)
         repo = entry["repo"]
+        # Say so when a repository uses something Sadoc cannot update, rather
+        # than passing over it in silence.
+        _report_unsupported(worker, gh, owner, name, repo, state, args)
         try:
             branch = gh.default_branch(owner, name)
             updates = pipeline.Worker(cfg, gh, state, log=_log).detect_repo(owner, name, branch)
