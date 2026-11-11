@@ -1,8 +1,15 @@
 """Sadoc's voice.
 
-Sadoc is the sailor of the west sea from the First Age - the one who traded in
-the shadow of the mountains while Nori, the Dwarf of Númenóre, built the boats
-that carried him. He brings news of things that have drifted in from far away.
+Sadoc Burrows is the Trailfinder of the Harfoots in *The Rings of Power*. He
+keeps the Star-book - the trails and the signs handed down by the Trailfinders
+before him - reads the stars, and leads the caravan east from one seasonal
+haven to the next. He is the first to notice that something is wrong in the
+sky, long before anyone else thinks to look up.
+
+That is rather the job of a dependency update agent.
+
+Nori, the curious young Harfoot he looks after, is the companion piece to this
+one.
 
 The voice is used in three places, and each one gets a different amount of it:
 
@@ -25,17 +32,17 @@ from dataclasses import dataclass, field
 @dataclass
 class Persona:
     name: str = "Sadoc"
-    tagline: str = "news from the western shore"
+    tagline: str = "reading the signs, and the stars"
     subject_prefix: str = "[Sadoc]"
     # Pull request descriptions get a closing line with no name in it.
     pr_flourish: bool = True
     pr_flourishes: list[str] = field(
         default_factory=lambda: [
-            "The tide turned; these versions hold.",
-            "Sail on the newer water.",
-            "Checked against the stars, and steady.",
-            "Fair winds; the holds are sound.",
-            "Out of the shadow, and into better weather.",
+            "The stars look clear; these versions hold.",
+            "Another season on the road.",
+            "The trail is sound and the holds are steady.",
+            "A fair wind out of the Southlands.",
+            "Read the signs, and take the newer road.",
         ]
     )
     # GitHub comments get a sign-off.

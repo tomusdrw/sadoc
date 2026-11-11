@@ -126,7 +126,7 @@ merge_reminder_hours  = 48
 # gets a single closing line, so it still reads like one a person wrote.
 [persona]
 name          = "Sadoc"
-tagline       = "news from the western shore"
+tagline        = "reading the signs, and the stars"
 subject_prefix = "[Sadoc]"
 pr_flourish   = true
 comment_signoff = "\n\n— Sadoc"

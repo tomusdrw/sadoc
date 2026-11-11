@@ -109,6 +109,12 @@ def cmd_scan(args, cfg, gh, state) -> int:
             branch = gh.default_branch(owner, name)
             updates = pipeline.Worker(cfg, gh, state, log=_log).detect_repo(owner, name, branch)
         except GhError as exc:
+            if gh.is_unusable_repository(exc):
+                # An empty repository, or one that has been deleted since it
+                # was listed, is not a problem - there is nothing to look after.
+                _log(f"  {repo}: nothing to look after, skipping")
+                state.log("nothing to look after, skipped", repo=repo)
+                continue
             _log(f"  {repo}: scan failed: {exc}")
             state.log(f"scan failed: {exc}", repo=repo, level="error")
             worker.notify(alerts_mod.failure(repo, "detection", str(exc)))
@@ -173,6 +179,10 @@ def cmd_run(args, cfg, gh, state) -> int:
             )
         except Exception as exc:  # noqa: BLE001
             detail = f"{type(exc).__name__}: {exc}"
+            if gh.is_unusable_repository(exc):
+                _log(f"{entry['repo']}: nothing to look after, skipping")
+                state.log("nothing to look after, skipped", repo=entry["repo"])
+                continue
             _log(f"{entry['repo']}: scan failed: {detail}")
             state.log(f"scan failed: {detail}", repo=entry["repo"], level="error")
             worker.notify(alerts_mod.failure(entry["repo"], "detection", detail))

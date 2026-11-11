@@ -35,6 +35,7 @@ FIXABLE = "fixable"
 TRANSIENT_FAILURE = "transient"
 ALREADY_OPEN = "already_open"
 NOT_BROKEN = "not_broken"
+EMPTY = "empty"
 UNKNOWN = "unknown"
 
 
@@ -81,7 +82,14 @@ def failing_jobs(gh: Gh, owner: str, repo: str, run_id: str) -> list[dict]:
 def diagnose(gh: Gh, owner: str, repo: str, branch: str) -> Diagnosis:
     """Work out why the default branch is red."""
     diagnosis = Diagnosis(repo=f"{owner}/{repo}", branch=branch)
-    run = latest_run_on_branch(gh, owner, repo, branch)
+    try:
+        run = latest_run_on_branch(gh, owner, repo, branch)
+    except Exception as exc:  # noqa: BLE001
+        if gh.is_empty_repository(exc):
+            diagnosis.state = EMPTY
+            diagnosis.detail = "the repository is empty"
+            return diagnosis
+        raise
     if not run:
         diagnosis.state = NOT_BROKEN
         diagnosis.detail = "no completed run on the default branch"

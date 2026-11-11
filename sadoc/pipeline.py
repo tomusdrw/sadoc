@@ -487,7 +487,14 @@ class Worker:
         """Look at the default branch. If it is red, offer a fix."""
         dry_run = self.cfg.dry_run if dry_run is None else dry_run
         result = {"repo": f"{owner}/{repo}", "state": "unknown", "pr": "", "detail": ""}
-        branch = self.gh.default_branch(owner, repo)
+        try:
+            branch = self.gh.default_branch(owner, repo)
+        except Exception as exc:  # noqa: BLE001
+            if self.gh.is_empty_repository(exc):
+                result["state"] = "empty"
+                result["detail"] = "the repository is empty"
+                return result
+            raise
 
         # Something Sadoc already opened is probably the same problem.
         for pr in self.gh.pr_list(owner, repo, state="open"):
@@ -500,6 +507,8 @@ class Worker:
         diagnosis = doctor.diagnose(self.gh, owner, repo, branch)
         result["state"] = diagnosis.state
         result["detail"] = diagnosis.detail
+        if diagnosis.state == doctor.EMPTY:
+            return result
         if not diagnosis.worth_fixing:
             if diagnosis.state == doctor.TRANSIENT_FAILURE:
                 self._safe_log(f"{owner}/{repo}: {diagnosis.detail}", repo=f"{owner}/{repo}")

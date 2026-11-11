@@ -6,8 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [1.0.0]
 
-First public release. Named after Sadoc, the sailor of the west sea from the First
-Age - the companion to Nori, the Dwarf of Númenóre who built his boats.
+First public release. Named after Sadoc Burrows, the Trailfinder of the Harfoots
+in *The Rings of Power* - he reads the signs and the stars, and is the first to
+notice when something is wrong in the sky.
 
 ### Added
 

@@ -191,7 +191,7 @@ def ci_failed(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{CI_FAILED}:{repo}#{number}",
-        heading="Red sails",
+        heading="A wrong turning on the road",
         persona=p,
     )
 
@@ -230,7 +230,7 @@ def review_received(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{REVIEW_RECEIVED}:{repo}#{number}:{author}",
-        heading="Word from the shore",
+        heading="Word from the trail",
         persona=p,
     )
 
@@ -259,7 +259,7 @@ def ready_to_merge(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{READY_TO_MERGE}:{repo}#{number}",
-        heading="Ready to come ashore",
+        heading="Ready for the road east",
         persona=p,
     )
 
@@ -289,7 +289,7 @@ def reminder_review(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{REMINDER_REVIEW}:{repo}#{number}:{int(time.time() // 86400)}",
-        heading="A reminder from the west",
+        heading="A reminder from the trail",
         persona=p,
     )
 
@@ -318,7 +318,7 @@ def reminder_merge(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{REMINDER_MERGE}:{repo}#{number}:{int(time.time() // 86400)}",
-        heading="A reminder from the west",
+        heading="A reminder from the trail",
         persona=p,
     )
 
@@ -370,7 +370,7 @@ def auto_merged(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{AUTO_MERGED}:{repo}#{number}",
-        heading="Merged and gone",
+        heading="Another season on the road",
         persona=p,
     )
 
@@ -394,7 +394,7 @@ def merged_by_human(
         repo=repo,
         pr_number=number,
         dedupe_key=f"{MERGED}:{repo}#{number}",
-        heading="Merged and gone",
+        heading="Another season on the road",
         persona=p,
     )
 

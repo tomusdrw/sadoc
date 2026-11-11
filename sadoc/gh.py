@@ -17,6 +17,38 @@ class GhError(RuntimeError):
     pass
 
 
+# The API says this when a repository has no commits at all.
+_EMPTY_REPO_MARKERS = (
+    "Git Repository is empty",
+    "This repository is empty",
+)
+
+
+def is_empty_repository(error: Exception) -> bool:
+    """Is this error just an empty repository?
+
+    An empty repository is not a failure - there is simply nothing in it to
+    look after. It should not be reported as a problem.
+    """
+    text = str(error)
+    return any(marker in text for marker in _EMPTY_REPO_MARKERS)
+
+
+def is_missing_repository(error: Exception) -> bool:
+    """Is this error just a repository that is not there any more?
+
+    A repository can be deleted or renamed between listing it and asking about
+    it. That is not a failure either.
+    """
+    text = str(error)
+    return "HTTP 404" in text or '"Not Found"' in text
+
+
+def is_unusable_repository(error: Exception) -> bool:
+    """Empty, gone, or otherwise nothing to work with."""
+    return is_empty_repository(error) or is_missing_repository(error)
+
+
 @dataclass
 class Gh:
     binary: str = "gh"
@@ -127,16 +159,25 @@ class Gh:
         """The files in a repository at a branch.
 
         The branch is resolved to a commit first: the tree endpoint does not
-        always resolve a branch name on its own.
+        always resolve a branch name on its own. An empty repository has no tree
+        at all, which is not an error - there is simply nothing in it.
         """
         sha = branch
         try:
             commit = self.api(f"repos/{owner}/{repo}/commits/{branch}")
             if isinstance(commit, dict) and commit.get("sha"):
                 sha = commit["sha"]
-        except Exception:  # noqa: BLE001
-            pass
-        data = self.api(f"repos/{owner}/{repo}/git/trees/{sha}?recursive=1")
+        except Exception as exc:  # noqa: BLE001
+            if is_unusable_repository(exc):
+                return []
+            # The commit lookup fails on some repositories that do have
+            # content; the tree endpoint is the better judge.
+        try:
+            data = self.api(f"repos/{owner}/{repo}/git/trees/{sha}?recursive=1")
+        except Exception as exc:  # noqa: BLE001
+            if is_unusable_repository(exc):
+                return []
+            raise
         return data.get("tree", []) if isinstance(data, dict) else []
 
     def file_text(self, owner: str, repo: str, path: str, ref: str | None = None) -> str:
