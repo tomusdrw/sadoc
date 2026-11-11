@@ -29,14 +29,20 @@ installed.
    environment problems as you go - generate the code, install the missing
    tool, export the right environment variable.
 
-4. **Do not modify the project.** You are working out how to build it, not
+4. **Include every check CI runs**, not just the obvious ones. If a CI step
+   checks out another repository (test vectors, fixtures, submodules), or
+   downloads a dataset, that step has to be in your command too - otherwise a
+   failure that CI would catch will slip through locally. A typical shape is
+   `git clone --depth 1 <url> <dir> && <test command>`.
+
+5. **Do not modify the project.** You are working out how to build it, not
    changing it. Do not edit source files, do not pin versions, do not "fix"
    anything that is broken in the project itself. If the project's own tests
    fail on a clean checkout, that is a finding to report, not something to
    fix. The only things you may create are generated files that the build
    itself produces.
 
-5. **Prefer the project's own commands** over ad-hoc ones. If CI runs
+6. **Prefer the project's own commands** over ad-hoc ones. If CI runs
    `npm run build && npm test`, that is the command to report. If CI runs
    `make test`, use that.
 

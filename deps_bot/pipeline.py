@@ -441,7 +441,16 @@ class Worker:
         """
         if not updates:
             return []
-        names = {u.name.lower() for u in updates}
+        # A package name may be namespaced ("library/node"), but the manifest
+        # usually spells it without the namespace ("node"). Scoped npm packages
+        # ("@types/node") keep their full name - the bare tail would be far too
+        # loose a match.
+        names: set[str] = set()
+        for update in updates:
+            lowered = update.name.lower()
+            names.add(lowered)
+            if not lowered.startswith("@"):
+                names.add(lowered.rsplit("/", 1)[-1])
         manifests = {u.manifest for u in updates}
         offenders: list[dict] = []
         for path in git.changed_files():
@@ -589,7 +598,7 @@ class Worker:
                 self._safe_log("working out how to build this project", repo=f"{owner}/{repo}")
                 setup = self.discover_verify_command(owner, repo, default_branch)
                 self.state.record_setup(
-                    f"{owner}/{repo}",
+                    repo,
                     setup["verify_command"],
                     setup["prerequisites"],
                     setup["notes"],
@@ -790,8 +799,25 @@ class Worker:
                 ci_state = self.watch_ci(owner, repo, number)
                 result.ci_state = ci_state
                 self.state.log(f"CI state after push: {ci_state}", repo=f"{owner}/{repo}")
+
+                # A base branch that is already red is not something the bot
+                # should try to fix in the project's code.
+                base_broken = False
+                base_detail = ""
+                if ci_state == "fail":
+                    workflow = self._failing_workflow(owner, repo, number)
+                    base_broken, base_detail = self.base_branch_is_also_failing(
+                        owner, repo, default_branch, workflow=workflow
+                    )
+                    if base_broken:
+                        self._safe_log(
+                            f"the base branch is already failing ({base_detail}) - "
+                            "not touching the project's code",
+                            repo=f"{owner}/{repo}",
+                        )
+
                 for _ in range(max(0, self.cfg.max_attempts - 1)):
-                    if ci_state != "fail":
+                    if ci_state != "fail" or base_broken:
                         break
                     self.state.log(
                         "CI failed - feeding logs back to the model", repo=f"{owner}/{repo}"
@@ -806,13 +832,19 @@ class Worker:
                     self.state.log(f"CI state after fix: {ci_state}", repo=f"{owner}/{repo}")
 
                 if ci_state == "fail":
+                    detail = (
+                        f"The base branch is already failing the same checks "
+                        f"({base_detail}), so this is not caused by the update."
+                        if base_broken
+                        else "The bot could not fix it."
+                    )
                     self.notify(
                         alerts.ci_failed(
                             f"{owner}/{repo}",
                             number,
                             url,
                             tier,
-                            "CI is failing on this pull request and the bot could not fix it.",
+                            detail,
                         )
                     )
 
@@ -870,6 +902,41 @@ class Worker:
         return int(m.group(1)) if m else None
 
     # ---------------------------------------------------------------- CI
+    def _failing_workflow(self, owner: str, repo: str, number: int) -> str | None:
+        """The name of the workflow whose check is failing on a pull request."""
+        try:
+            checks = self.gh.pr_checks(owner, repo, number)
+        except Exception:  # noqa: BLE001
+            return None
+        for check in checks:
+            if check.get("bucket") in ("fail", "cancel"):
+                return check.get("workflow") or check.get("name")
+        return None
+
+    def base_branch_is_also_failing(
+        self, owner: str, repo: str, branch: str, workflow: str | None = None
+    ) -> tuple[bool, str]:
+        """Is the base branch already failing the same checks?
+
+        A repository can be red before the bot touches it - a new clippy lint,
+        a flaky test, a toolchain that moved on. Fixing the project's code in
+        that case is the wrong answer, so the base branch is checked first.
+
+        The workflow matters: a repository may have several workflows, and only
+        the one that failed on the pull request says anything.
+        """
+        run = self.gh.latest_run(owner, repo, branch, workflow=workflow)
+        if not run or run.get("conclusion") != "failure":
+            return False, ""
+        try:
+            jobs = self.gh.run_jobs(owner, repo, str(run["databaseId"]))
+        except Exception:  # noqa: BLE001
+            return False, ""
+        failing = [j.get("name") for j in jobs if j.get("conclusion") == "failure"]
+        if not failing:
+            return False, ""
+        return True, ", ".join(str(f) for f in failing)
+
     def watch_ci(self, owner: str, repo: str, number: int, timeout_s: int = 2400) -> str:
         """Wait for the PR checks to settle. Returns pass / fail / pending / none.
 

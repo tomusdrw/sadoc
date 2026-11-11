@@ -100,3 +100,45 @@ def test_revert_restores_the_directive_and_keeps_the_updates(repo):
     # The dependency updates survive.
     assert "v0.3.1100" in text
     assert "v5.5.0" in text
+
+
+def test_out_of_scope_accepts_a_namespaced_package(repo):
+    """A Docker image is "library/node" in the registry but "node" in the file."""
+    (repo.path / "Dockerfile").write_text("FROM node:20-bullseye-slim\n")
+    from deps_bot.pipeline import Worker
+
+    worker = Worker.__new__(Worker)
+    update = Update(
+        repo="o/r",
+        manifest="Dockerfile",
+        ecosystem="docker",
+        name="library/node",
+        section="FROM",
+        kind="runtime",
+        current="20-bullseye-slim",
+        latest="20.20-bullseye-slim",
+        bump_kind="minor",
+        constraint="20-bullseye-slim",
+    )
+    assert worker._out_of_scope_changes(repo, [update]) == []
+
+
+def test_out_of_scope_does_not_match_a_scoped_package_by_its_tail(repo):
+    """`@types/node` must not match a line that merely says "node"."""
+    (repo.path / "package.json").write_text('{"devDependencies": {"@types/node": "^26.1.1"}}\n')
+    from deps_bot.pipeline import Worker
+
+    worker = Worker.__new__(Worker)
+    update = Update(
+        repo="o/r",
+        manifest="package.json",
+        ecosystem="npm",
+        name="@types/node",
+        section="devDependencies",
+        kind="dev",
+        current="26.1.1",
+        latest="26.6.6",
+        bump_kind="minor",
+        constraint="^26.1.1",
+    )
+    assert worker._out_of_scope_changes(repo, [update]) == []

@@ -295,9 +295,25 @@ class Gh:
     def add_labels(self, owner: str, repo: str, number: int, labels: list[str]) -> None:
         if not labels:
             return
-        self.api(
-            f"repos/{owner}/{repo}/issues/{number}/labels", method="POST", labels=",".join(labels)
+        # The endpoint wants an array, so the body has to be JSON.
+        payload = json.dumps({"labels": list(labels)})
+        proc = subprocess.run(
+            [
+                self.binary,
+                "api",
+                f"repos/{owner}/{repo}/issues/{number}/labels",
+                "--method",
+                "POST",
+                "--input",
+                "-",
+            ],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
+        if proc.returncode != 0:
+            raise GhError(f"could not add labels: {proc.stderr.strip()[:300]}")
 
     def create_label(
         self, owner: str, repo: str, name: str, color: str = "ededed", description: str = ""
@@ -312,6 +328,37 @@ class Gh:
         )
 
     # ------------------------------------------------------------- runs
+    def latest_run(
+        self, owner: str, repo: str, branch: str, workflow: str | None = None
+    ) -> dict | None:
+        """The most recent workflow run on a branch, optionally for one workflow."""
+        args = ["run", "list", "--repo", f"{owner}/{repo}", "--branch", branch, "--limit", "10"]
+        if workflow:
+            args += ["--workflow", workflow]
+        args += [
+            "--json",
+            "databaseId,conclusion,status,workflowName,headBranch,url,createdAt",
+        ]
+        out = self.run(*args, check=False)
+        try:
+            runs = json.loads(out or "[]")
+        except json.JSONDecodeError:
+            return None
+        if not runs:
+            return None
+        # Only a completed run tells us anything.
+        for run in runs:
+            if run.get("status") == "completed":
+                return run
+        return runs[0]
+
+    def run_jobs(self, owner: str, repo: str, run_id: str) -> list[dict]:
+        """The jobs of a workflow run, with their conclusions."""
+        data = self.api(f"repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+        if not isinstance(data, dict):
+            return []
+        return data.get("jobs", [])
+
     def run_logs_failed(self, owner: str, repo: str, run_id: str, max_bytes: int = 40000) -> str:
         proc = subprocess.run(
             [self.binary, "run", "view", run_id, "--repo", f"{owner}/{repo}", "--log-failed"],
