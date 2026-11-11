@@ -101,7 +101,20 @@ def diagnose(gh: Gh, owner: str, repo: str, branch: str) -> Diagnosis:
     diagnosis.failed_job = job.get("name", "")
     diagnosis.url = job.get("html_url", "")
     logs = gh.job_logs(owner, repo, str(job.get("id", "")))
+    if not logs.strip():
+        # The job log may have expired; the run's log is the fallback.
+        try:
+            logs = gh.run_logs_failed(owner, repo, str(run["databaseId"]))
+        except Exception:  # noqa: BLE001
+            logs = ""
     diagnosis.logs = logs[-30000:]
+    if not diagnosis.logs.strip():
+        # Nothing to show the model, so nothing it can do.
+        diagnosis.state = UNKNOWN
+        diagnosis.detail = (
+            "the job failed but its log is no longer available (GitHub keeps them for ninety days)"
+        )
+        return diagnosis
     transient = _is_transient(diagnosis.logs)
     if transient:
         diagnosis.state = TRANSIENT_FAILURE

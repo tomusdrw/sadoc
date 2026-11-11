@@ -26,6 +26,7 @@ BLOCKED = "blocked"
 AUTO_MERGED = "auto_merged"
 MERGED = "merged"
 RELEASE_DUE = "release_due"
+BRANCH_FIXED = "branch_fixed"
 FAILURE = "failure"
 NIGHTLY_SUMMARY = "nightly_summary"
 
@@ -419,6 +420,37 @@ def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) 
         repo=repo,
         dedupe_key=f"{FAILURE}:{repo}:{stage}:{int(time.time() // 86400)}",
         heading="Something went wrong",
+        persona=p,
+    )
+
+
+def branch_fixed(
+    repo: str, url: str, job: str, cause: str, persona: Persona | None = None
+) -> Alert:
+    """The default branch was broken and a fix has been offered."""
+    p = persona or Persona()
+    blocks = _rows(
+        ("Repository", repo),
+        ("Failed job", job or "the build"),
+        ("Fix", url),
+    )
+    if cause:
+        blocks.append(Block(kind="paragraph", value=cause))
+    blocks.append(
+        Block(
+            kind="note",
+            tone="ok",
+            value="The default branch was red. I have opened a pull request with the fix.",
+        )
+    )
+    return Alert(
+        BRANCH_FIXED,
+        p.subject(f"the default branch of {repo} was broken - I have a fix"),
+        blocks,
+        repo=repo,
+        dedupe_key=f"{BRANCH_FIXED}:{repo}:{url}",
+        heading="A broken branch, found and mended",
+        footer=p.signature(),
         persona=p,
     )
 

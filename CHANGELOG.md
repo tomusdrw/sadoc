@@ -50,6 +50,16 @@ Age - the companion to Nori, the Dwarf of Númenóre who built his boats.
   repositories this tool handles, so the two do not compete.
 - **A voice.** Emails and GitHub comments are signed and written in Sadoc's voice;
   pull request descriptions carry a single closing line and nothing else.
+- **GitHub Actions and the runtimes inside them.** The actions a workflow uses are
+  found and bumped, and so is the runtime a job runs on - `node-version`,
+  `python-version`, `go-version`.
+- **The doctor.** The latest run on the default branch is examined; if it is red,
+  the failed logs go to the model and the fix is offered as a pull request.
+- **Releases.** The release mechanism of each repository is worked out - crates.io,
+  npm, PyPI, a GitHub release, or nothing because it deploys from its default
+  branch - and you are nudged when the version moves past what has been published.
+- **Dependabot handover.** Dependabot version updates can be switched off in the
+  repositories this tool handles, so the two do not compete.
 
 ### Notes
 

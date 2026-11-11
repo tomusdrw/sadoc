@@ -582,10 +582,11 @@ class Worker:
                 state="open",
             )
             self.notify(
-                alerts.failure(
+                alerts.branch_fixed(
                     f"{owner}/{repo}",
-                    "the default branch was broken",
-                    f"I have opened a pull request with the fix: {pr.get('url', '')}",
+                    pr.get("url", ""),
+                    diagnosis.failed_job,
+                    turn.text[:800],
                     persona=self.persona,
                 )
             )

@@ -21,8 +21,10 @@ GitHub token to push, but the model itself never holds one.
 ```
 scan      find outdated dependencies          (deterministic, no model involved)
 run       bump -> verify -> open PR -> fix CI
+doctor    check the default branch and fix what is broken
 monitor   chase failing CI and review feedback
 remind    email about pull requests left unattended
+releases  report which repositories owe a release
 report    markdown digest
 ```
 
@@ -110,8 +112,10 @@ sadoc scope                   # which repos are in scope, and why
 sadoc run                     # the full pipeline
 sadoc run --repo my-repo      # just one repository
 sadoc --dry-run run           # everything except push and open the PR
+sadoc doctor                  # is the default branch green? fix it if not
 sadoc monitor                 # chase CI and review feedback
 sadoc remind                  # email about unattended pull requests
+sadoc releases                # which repositories owe a release
 sadoc status                  # queue and pull request state
 ```
 
@@ -210,6 +214,55 @@ the build and test commands itself - including any code generation that has to
 happen first - runs them until they work, and remembers the result. A repository
 whose CI runs `templ generate` before `go build` is handled without a hand-written
 override.
+
+### The default branch
+
+`sadoc doctor` looks at the latest run on the default branch. If it is red, the
+failed logs go to the model, the model works out what broke, and the fix is
+offered as a pull request. Transient failures - a network hiccup, a cancelled
+job - are left alone, and a repository that already has a Sadoc pull request open
+is not diagnosed twice.
+
+### Releases
+
+What a release means differs per repository, so Sadoc works it out from the
+repository itself:
+
+| Kind | How it is recognised |
+|---|---|
+| `crates.io` | a workflow that runs `cargo publish` |
+| `npm` | a workflow that runs `npm publish` |
+| `PyPI` | a workflow that runs `twine`, `uv publish` or `poetry publish` |
+| `github` | a workflow that creates a GitHub release |
+| `auto-deploy` | the project deploys from its default branch, so nothing to publish |
+
+The published version is looked up in the registry, not just in the tags, because
+a crate can be on crates.io without ever having had a tag.
+
+When the version in the manifest moves past what has been published, you are
+nudged - with what a release would mean for that repository. To say it
+explicitly, put it in the README:
+
+```html
+<!-- sadoc: release = npm, github -->
+```
+
+or in a `.sadoc.toml`:
+
+```toml
+[release]
+kind = "crates.io"
+command = "cargo publish"
+```
+
+### GitHub Actions and the runtimes inside them
+
+Both are dependencies. The actions a workflow uses are found and bumped, with the
+pin written the way it was written - `actions/checkout@v4` becomes `@v7`, not
+`@v7.0.1`. The runtime a job runs on is found as well: `node-version`,
+`python-version` and `go-version` are compared against the newest release. A
+workflow that reads the version from a file (`.nvmrc`, `go.mod`) is left alone,
+because it is already in step with the project.
 
 ---
 
