@@ -32,6 +32,7 @@ OK = "#2c4c35"
 OK_SOFT = "#eaf0df"
 # Bookish display faces, with local fallbacks for clients that block web fonts.
 DISPLAY_FONT = "'Palatino Linotype','Book Antiqua',Palatino,'Noto Serif Display',Georgia,serif"
+LOGO_CID = "sadoc-logo"
 
 
 @dataclass
@@ -175,6 +176,8 @@ font-family:Georgia,'Times New Roman',serif">
  style="max-width:600px;width:100%;table-layout:fixed;background:{PAPER};
 border:1px solid {LINE};border-top:3px solid {GOLD};border-collapse:separate">
 <tr><td style="background:{accent};padding:22px 24px;border-bottom:2px solid {GOLD}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+ style="table-layout:fixed"><tr><td style="vertical-align:middle">
 <p style="margin:0 0 10px;color:{GOLD};font-family:Arial,Helvetica,sans-serif;
 font-size:10px;line-height:1.6;letter-spacing:.16em;text-transform:uppercase">
 From the havens of Middle-earth</p>
@@ -183,6 +186,10 @@ font-variant:small-caps;line-height:1.2;letter-spacing:.06em;
 overflow-wrap:anywhere;word-break:break-word">{_e(accent_label)}</p>
 <p aria-hidden="true" style="margin:10px 0 0;color:{GOLD};font-size:14px;
 letter-spacing:.3em">&#10022; &nbsp; &#10022; &nbsp; &#10022;</p>
+</td><td width="96" align="right" style="width:96px;vertical-align:middle">
+<img src="cid:{LOGO_CID}" width="80" height="80" alt=""
+ style="display:block;width:80px;height:80px;background:{PAPER};border:1px solid {GOLD}">
+</td></tr></table>
 </td></tr>
 {heading_html}
 <tr><td style="padding:0 24px 18px"><table role="presentation" width="100%"

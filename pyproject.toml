@@ -40,6 +40,9 @@ Issues = "https://github.com/tomusdrw/sadoc/issues"
 [tool.setuptools]
 packages = ["sadoc"]
 
+[tool.setuptools.package-data]
+sadoc = ["logo.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
