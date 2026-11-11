@@ -205,7 +205,11 @@ def cmd_monitor(args, cfg, gh, state) -> int:
     if not prs:
         _log("no open PRs tracked")
         return 0
+    deadline = getattr(args, "deadline", None)
     for row in prs:
+        if deadline and time.time() >= deadline:
+            _log("past the deadline, stopping the monitor pass")
+            break
         repo = row["repo"]
         owner, _, name = repo.partition("/")
         number = row["number"]
@@ -309,6 +313,12 @@ def main() -> int:
 
     p_mon = sub.add_parser("monitor", help="watch open PRs")
     p_mon.add_argument("--json", action="store_true")
+    p_mon.add_argument(
+        "--deadline",
+        type=float,
+        default=None,
+        help="epoch seconds after which no further PR is examined",
+    )
     p_mon.set_defaults(func=cmd_monitor)
 
     p_rem = sub.add_parser("remind", help="email about unattended PRs")

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS prs (
     review_decision TEXT,
     checks_state TEXT,
     auto_merged INTEGER DEFAULT 0,
+    ci_attempts INTEGER DEFAULT 0,
     PRIMARY KEY (repo, number)
 );
 
@@ -142,13 +143,29 @@ CREATE INDEX IF NOT EXISTS idx_events_repo ON events(repo, ts);
 
 
 class State:
+    # Columns added after the first release. An existing database is migrated in
+    # place, so an upgrade does not lose the history.
+    MIGRATIONS = {
+        "prs": {
+            "ci_attempts": "INTEGER DEFAULT 0",
+        },
+    }
+
     def __init__(self, path: str | Path = DEFAULT_DB):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        for table, columns in self.MIGRATIONS.items():
+            existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            for column, definition in columns.items():
+                if column not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @contextmanager
     def tx(self):
@@ -271,6 +288,19 @@ class State:
         return self.conn.execute(
             "SELECT * FROM prs WHERE repo=? AND branch=? AND state='open'", (repo, branch)
         ).fetchone()
+
+    def bump_ci_attempts(self, repo: str, number: int) -> int:
+        """Count how many times the bot has tried to fix a PR's CI."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE prs SET ci_attempts = COALESCE(ci_attempts, 0) + 1 "
+                "WHERE repo=? AND number=?",
+                (repo, number),
+            )
+            row = c.execute(
+                "SELECT ci_attempts FROM prs WHERE repo=? AND number=?", (repo, number)
+            ).fetchone()
+        return row["ci_attempts"] if row else 0
 
     # ------------------------------------------------------- repo setup
     def record_setup(

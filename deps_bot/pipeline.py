@@ -825,6 +825,7 @@ class Worker:
                     note = self.fix_ci(
                         owner, repo, number, branch, default_branch, updates, git, session
                     )
+                    self.state.bump_ci_attempts(f"{owner}/{repo}", number)
                     if "no changes" in note:
                         break
                     ci_state = self.watch_ci(owner, repo, number)
@@ -1229,6 +1230,19 @@ class Worker:
             return f"ci={ci_state} no new comments"
 
         default_branch = self.gh.default_branch(owner, name)
+
+        # Decide whether the model is needed at all before starting it.
+        if ci_state == "fail" and not fresh:
+            attempts = row_get(repo_row, "ci_attempts") or 0
+            if attempts >= self.cfg.max_attempts:
+                return f"ci=fail, already tried {attempts} times - leaving it for a human"
+            workflow = self._failing_workflow(owner, name, number)
+            base_broken, base_detail = self.base_branch_is_also_failing(
+                owner, name, default_branch, workflow=workflow
+            )
+            if base_broken:
+                return f"ci=fail, the base branch is already failing ({base_detail})"
+
         git = self.prepare_clone(owner, name, default_branch)
         # The deps branch only exists on the remote - the clone is shallow and
         # fetched the default branch only.
@@ -1259,6 +1273,7 @@ class Worker:
                 note = self.fix_ci(
                     owner, name, number, branch, default_branch, updates, git, session
                 )
+                self.state.bump_ci_attempts(repo, number)
                 if dry_run:
                     return f"ci=fail (dry run) {note[:120]}"
                 new_state = self.watch_ci(owner, name, number, timeout_s=1800)

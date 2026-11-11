@@ -10,12 +10,20 @@
 # enough time left for it to finish.
 set -uo pipefail
 
-DEPSBOT_HOME="${DEPSBOT_HOME:-$HOME/.local/share/deps-bot}"
+# The install directory is derived from the script's own location, so the
+# nightly runner works wherever it was installed.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPSBOT_HOME="${DEPSBOT_HOME:-$(dirname "$SCRIPT_DIR")}"
 DEPSBOT_BIN="$DEPSBOT_HOME/bin/deps-bot"
 CONFIG="${DEPSBOT_CONFIG:-$HOME/.config/deps-bot/config.toml}"
 LOG_DIR="${DEPSBOT_LOG_DIR:-$HOME/.local/share/deps-bot/logs}"
 REPORT_DIR="${DEPSBOT_REPORT_DIR:-$HOME/.local/share/deps-bot/reports}"
 STATE_DB="${DEPSBOT_DB:-$HOME/.local/share/deps-bot/state.db}"
+
+if [ ! -x "$DEPSBOT_BIN" ]; then
+  echo "deps-bot not found at $DEPSBOT_BIN" >&2
+  exit 1
+fi
 
 mkdir -p "$LOG_DIR" "$REPORT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -55,17 +63,18 @@ WSTART=$(to_minutes "$WINDOW_START")
 WEND=$(to_minutes "$WINDOW_END")
 NOW=$(minutes_now)
 
-# Allow the window to wrap past midnight.
-if [ "$WEND" -le "$WSTART" ]; then WEND=$((WEND + 1440)); fi
-if [ "$NOW" -lt "$WSTART" ]; then NOW=$((NOW + 1440)); fi
+# The deadline is the next time the clock reaches the end of the window.
+if [ "$WEND" -gt "$NOW" ]; then
+  DELTA_MIN=$((WEND - NOW))
+else
+  DELTA_MIN=$((1440 - NOW + WEND))
+fi
+DEADLINE=$(( $(date +%s) + DELTA_MIN * 60 ))
+TOTAL_MIN=$(( (WEND - WSTART + 1440) % 1440 ))
+[ "$TOTAL_MIN" -eq 0 ] && TOTAL_MIN=1440
 
-REMAINING=$((WEND - NOW))
-TOTAL=$((WEND - WSTART))
-log "window $WINDOW - ${REMAINING} min remaining of ${TOTAL}"
-
-# Absolute deadline (epoch seconds) after which no new repository is started.
-# A repository already in flight is allowed to finish.
-DEADLINE=$(( $(date +%s) + REMAINING * 60 ))
+log "window $WINDOW - ${DELTA_MIN} min remaining of ${TOTAL_MIN}"
+log "deadline $(date -d "@$DEADLINE" +%H:%M:%S)"
 
 log "=== scan ==="
 run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
@@ -74,7 +83,7 @@ log "=== run ==="
 run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" || true
 
 log "=== monitor ==="
-run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" monitor || true
+run "$DEPSBOT_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
 
 log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"
