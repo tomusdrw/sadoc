@@ -80,6 +80,32 @@ Two more traps:
 - The script passed to `sh -c` must be quoted. Unquoted, the *outer* shell splits
   it on `;` and `||` and runs parts of the command **outside** the sandbox.
 
+### Test environments belong in containers
+
+A build recipe usually needs a database, a browser, a message broker. Installing
+those onto the machine is slow, needs root, and leaves the machine dirty - and
+the next run has to do it all again. So the agent is told to build a container
+image for anything that needs a service, and to run the checks inside it.
+
+The runtime is **rootless** (`podman`), and the Docker socket is never used:
+the socket is `root:docker`, so reaching the daemon is reaching root. The
+container rules live in `sadoc/policy.py` and are handed to the extension in
+the environment, so there is one list of them rather than one in Python and one
+in TypeScript. A container may not:
+
+- run privileged, or with extra capabilities;
+- join the host network, pid, ipc, uts or user namespace;
+- use an unconfined seccomp profile, or a host device;
+- mount the runtime socket, or any host directory outside the workspace.
+
+The runtime is allowed in *both* the `tool_call` path and the `user_bash` path.
+That matters: if the model could not run the runtime while it was working out
+how the project builds, it could never discover a containerised recipe in the
+first place.
+
+Images and containers live under the persistent tool cache, so the image is
+built once and reused.
+
 ---
 
 ## 4. Detection

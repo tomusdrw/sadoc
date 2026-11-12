@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import policy
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SANDBOX_EXTENSION = REPO_ROOT / "extensions" / "sandbox.ts"
 
@@ -87,6 +89,8 @@ class PiSession:
         timeout_s: int = 1800,
         extra_args: list[str] | None = None,
         extra_secrets: list[str] | None = None,
+        allow_containers: bool = False,
+        container_runtime: str = "podman",
     ):
         self.cwd = str(cwd)
         self.model = model
@@ -101,6 +105,8 @@ class PiSession:
         self._scrub_env = scrub_env
         self._extra_args = extra_args or []
         self._extra_secrets = list(extra_secrets or [])
+        self._allow_containers = allow_containers
+        self._container_runtime = container_runtime
         self.transcript: list[dict] = []
 
     # ------------------------------------------------------------- setup
@@ -121,6 +127,15 @@ class PiSession:
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
         env["SADOC_CACHE_DIR"] = str(cache_dir)
+        env["SADOC_ALLOW_CONTAINERS"] = "1" if self._allow_containers else "0"
+        env["SADOC_CONTAINER_RUNTIME"] = self._container_runtime
+        # The container rules are owned by sadoc.policy and handed over here, so
+        # there is one list of them rather than one in Python and one in the
+        # extension.
+        if self._allow_containers:
+            env["SADOC_CONTAINER_POLICY"] = policy.policy_json()
+        else:
+            env.pop("SADOC_CONTAINER_POLICY", None)
         return env
 
     def _write_models_json(self) -> None:

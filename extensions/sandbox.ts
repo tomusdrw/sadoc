@@ -23,6 +23,10 @@ const ALLOW_NET = process.env.SADOC_ALLOW_NET === "1";
 // A persistent, writable directory for the package managers' caches. Without
 // it every run re-downloads the whole registry, which is slow and flaky.
 const TOOL_CACHE = process.env.SADOC_CACHE_DIR || "/tmp/depsbot-toolcache";
+// Rootless containers, for test environments that would otherwise be installed
+// onto the machine. Off by default.
+const ALLOW_CONTAINERS = process.env.SADOC_ALLOW_CONTAINERS === "1";
+const RUNTIME = process.env.SADOC_CONTAINER_RUNTIME || "podman";
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
 const FORBIDDEN: Array<[RegExp, string]> = [
@@ -38,15 +42,95 @@ const FORBIDDEN: Array<[RegExp, string]> = [
 	[/\bgh\s+auth\s+(login|logout|refresh)\b/i, "gh auth"],
 	[/\bsudo\b/i, "sudo"],
 	[/\bsystemctl\b/i, "systemctl"],
-	[/\bdocker\b/i, "docker"],
-	[/\bpodman\b/i, "podman"],
 	[/\bcurl\b[^|;&]*\|\s*(ba)?sh/i, "curl | sh"],
 	[/\beval\b/i, "eval"],
 	[/\bnc\b[^|;&]*\s-l/i, "netcat listener"],
 ];
 
+// What a container must never be allowed to do. A rootless container is
+// already confined to the user's own files; these rules stop it reaching
+// further - the host namespaces, the runtime socket, or anything outside the
+// workspace.
+//
+// The rules are owned by sadoc.policy and handed over in the environment, so
+// there is one list of them rather than one here and one there.
+const CONTAINER_FORBIDDEN: Array<[RegExp, string]> = readPolicy().container;
+const RUNTIME_PATTERNS: Array<[string, RegExp, boolean]> = readPolicy().runtimes;
+
+interface Policy {
+	container: Array<[RegExp, string]>;
+	runtimes: Array<[string, RegExp, boolean]>;
+}
+
+/**
+ * The rules are owned by sadoc.policy and handed over in the environment, so
+ * there is one list of them rather than one here and one there.
+ */
+function readPolicy(): Policy {
+	const empty: Policy = { container: [], runtimes: [] };
+	const raw = process.env.SADOC_CONTAINER_POLICY;
+	if (!raw) {
+		return empty;
+	}
+	try {
+		const parsed = JSON.parse(raw);
+		const container = Array.isArray(parsed?.container)
+			? parsed.container
+					.filter((rule) => Array.isArray(rule) && typeof rule[0] === "string")
+					.map((rule) => [new RegExp(rule[0], "i"), String(rule[1] ?? "that")])
+			: [];
+		const runtimes = Array.isArray(parsed?.runtimes)
+			? parsed.runtimes
+					.filter((rule) => Array.isArray(rule) && typeof rule[0] === "string")
+					.map((rule) => [
+						String(rule[0]),
+						new RegExp(rule[1], "i"),
+						rule[2] !== false,
+					])
+			: [];
+		return { container, runtimes };
+	} catch {
+		return empty;
+	}
+}
+
 function q(s: string): string {
 	return "'" + s.replace(/'/g, `'\\''`) + "'";
+}
+
+/**
+ * The reason a command is not allowed, or null if it is fine.
+ *
+ * `allowedRuntime` is the one container runtime that may be used, if any.
+ * Every other runtime is refused like any other command, and Docker always
+ * is: its socket is root-equivalent, so reaching the daemon would be
+ * reaching root.
+ *
+ * The runtime that is allowed is still bound by the container rules: no host
+ * namespaces, no runtime socket, no host directories, no extra capabilities.
+ */
+export function policyReason(command: string, allowedRuntime: string | null): string | null {
+	for (const [pattern, label] of FORBIDDEN) {
+		if (pattern.test(command)) {
+			return label;
+		}
+	}
+	for (const [name, pattern, mayEnable] of RUNTIME_PATTERNS) {
+		if (mayEnable && allowedRuntime && name === allowedRuntime) {
+			continue;
+		}
+		if (pattern.test(command)) {
+			return name;
+		}
+	}
+	if (allowedRuntime) {
+		for (const [pattern, label] of CONTAINER_FORBIDDEN) {
+			if (pattern.test(command)) {
+				return label;
+			}
+		}
+	}
+	return null;
 }
 
 /** Build the bubblewrap argv for a single command. */
@@ -62,6 +146,9 @@ export function buildSandbox(command: string, cwd: string): string {
 		`[ -r ${q(realHome)}/.profile ] && . ${q(realHome)}/.profile`,
 		`export HOME=${q(scratch)}`,
 		`export XDG_CACHE_HOME=${q(scratch)}/.cache`,
+		// The persistent cache, named so the agent can install tools into it
+		// instead of into a temporary directory that is thrown away each run.
+		`export SADOC_TOOL_CACHE=${q(cache)}`,
 		// The package managers' caches live in the persistent cache directory,
 		// not in the scratch tmpfs, so a run does not re-download the registry.
 		`export CARGO_HOME=${q(cache)}/cargo`,
@@ -72,6 +159,18 @@ export function buildSandbox(command: string, cwd: string): string {
 		`export PIP_CACHE_DIR=${q(cache)}/pip`,
 		`export UV_CACHE_DIR=${q(cache)}/uv`,
 		`export BUN_INSTALL_CACHE_DIR=${q(cache)}/bun`,
+		// A rootless runtime keeps its images and containers in the cache
+		// directory, not in the real home.
+		...(ALLOW_CONTAINERS
+			? [
+				`export XDG_DATA_HOME=${q(cache)}/containers/data`,
+				`export XDG_RUNTIME_DIR=${q(cache)}/containers/run`,
+				// The runtime the agent should use, so it does not have to guess.
+				`export SADOC_CONTAINER_RUNTIME=${q(RUNTIME)}`,
+				`mkdir -p ${q(cache)}/containers/data ${q(cache)}/containers/run`,
+				`chmod 700 ${q(cache)}/containers/run`,
+			]
+			: []),
 		command,
 	].join("\n");
 	const argv = [
@@ -110,13 +209,13 @@ export default function (pi: ExtensionAPI) {
 	// RPC `bash` is a user command, not a model tool call. It does not pass
 	// through tool_call, but runs the same discovered, untrusted build recipe.
 	pi.on("user_bash", (event: any) => {
-		for (const [pattern, label] of FORBIDDEN) {
-			if (pattern.test(event.command)) {
-				return { result: {
-					output: `Blocked by sadoc policy: ${label}`,
-					exitCode: 1, cancelled: false, truncated: false,
-				} };
-			}
+		const command = String(event.command ?? "");
+		const label = policyReason(command, ALLOW_CONTAINERS ? RUNTIME : null);
+		if (label) {
+			return { result: {
+				output: `Blocked by sadoc policy: ${label}`,
+				exitCode: 1, cancelled: false, truncated: false,
+			} };
 		}
 		const local = createLocalBashOperations();
 		return { operations: {
@@ -129,15 +228,17 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event: any) => {
 		if (SHELL_TOOLS.has(event.toolName)) {
 			const command = String(event.input.command ?? "");
-			for (const [pattern, label] of FORBIDDEN) {
-				if (pattern.test(command)) {
-					return {
-						block: true,
-						reason:
-							`Blocked by sadoc policy: "${label}" is not allowed in the agent sandbox. ` +
-							`The orchestrator owns all remote state (push, PR create, PR merge).`,
-					};
-				}
+			// The runtime is allowed here too when it has been enabled: the model
+			// has to be able to build and run a container while it works out how
+			// the project builds, or it can never discover such a recipe.
+			const label = policyReason(command, ALLOW_CONTAINERS ? RUNTIME : null);
+			if (label) {
+				return {
+					block: true,
+					reason:
+						`Blocked by sadoc policy: "${label}" is not allowed in the agent sandbox. ` +
+						`The orchestrator owns all remote state (push, PR create, PR merge).`,
+				};
 			}
 			// Mutate in place: pi executes the (mutated) command.
 			event.input.command = buildSandbox(command, String(event.input.cwd ?? WORKSPACE));

@@ -11,6 +11,10 @@ DEFAULT_CONFIG = Path.home() / ".config" / "sadoc" / "config.toml"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+class ConfigError(Exception):
+    """The configuration says something that cannot be honoured."""
+
+
 @dataclass
 class ModelSpec:
     provider: str = "local"
@@ -71,6 +75,11 @@ class Config:
 
     # the voice Sadoc writes in
     persona: dict = field(default_factory=dict)
+
+    # rootless containers, for test environments that would otherwise be
+    # installed onto the machine
+    allow_containers: bool = False
+    container_runtime: str = "podman"
 
     # stop Dependabot competing with this tool in the repositories it handles
     disable_dependabot: bool = True
@@ -139,6 +148,18 @@ def load(path: str | Path | None = None) -> Config:
     sandbox = raw.get("sandbox", {})
     cfg.allow_network = bool(sandbox.get("allow_network", True))
     cfg.scrub_env = bool(sandbox.get("scrub_env", True))
+    # Rootless containers, for test environments that would otherwise be
+    # installed onto the machine. These live under [sandbox] with the rest of
+    # the sandbox settings, but the top level is accepted too.
+    cfg.allow_containers = bool(sandbox.get("allow_containers", raw.get("allow_containers", False)))
+    runtime = str(sandbox.get("container_runtime", raw.get("container_runtime", "podman")))
+    if runtime.lower() == "docker":
+        # The Docker socket is root-equivalent: reaching the daemon is reaching
+        # root. Sadoc only ever uses a rootless runtime.
+        raise ConfigError(
+            "container_runtime must not be 'docker'; use a rootless runtime such as podman"
+        )
+    cfg.container_runtime = runtime
 
     behaviour = raw.get("behaviour", {})
     cfg.tier_b_major = bool(behaviour.get("tier_b_major", True))

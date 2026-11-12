@@ -36,6 +36,38 @@ calls. SETUP and VERIFY will run together in one bash shell, starting at the rep
 root. Use relative paths and idempotent steps; do not depend on files you manually
 created during exploration. Clean up any local services you start (use a trap).
 
+**Install into the persistent cache, not into a temporary directory.** The
+environment variable `SADOC_TOOL_CACHE` names a directory that survives between
+runs and is wiped only by the person who owns the machine. Anything you put in
+`/tmp` or in the scratch `HOME` is thrown away, and the next run has to download
+and rebuild it all again. So: put downloaded tools in
+`$SADOC_TOOL_CACHE/<tool>`, put package-manager caches and stores there (the
+package managers already do), and put browser downloads and database data
+directories there too. Then a later run finds them already in place.
+
+The cache is yours to use, but it is also where the recipe's setup belongs: if
+the recipe installs a tool into `/tmp`, the recipe will have to install it again
+every time it is replayed.
+
+**Prefer a container for anything that needs a service.** A database, a message
+broker, a browser with system libraries - anything that would mean installing
+software onto the machine or compiling a service from source - belongs in a
+container image, not in the cache. The runtime is the one named by
+`SADOC_CONTAINER_RUNTIME` (normally `podman`); it runs rootless, so it needs no
+privileges, and the image and its containers live under `$SADOC_TOOL_CACHE`.
+Build the image once and run the checks inside it.
+
+A container must stay inside the workspace: no `--privileged`, no host
+network, no host pid/ipc/uts namespace, no extra capabilities, no host
+device, and no mounting anything from the host outside the workspace. Those are
+blocked. Bind the repository and the cache into the container, and nothing else.
+
+If the runtime does not work here, say so under PREREQUISITES and install the
+service into the cache instead.
+
+Either way, the recipe has to be self-contained and repeatable: it creates what
+it needs, runs the checks, and cleans up after itself.
+
 Use installed or project-pinned toolchains. You have no root, sudo, systemd,
 Docker or Podman. Writable locations are the repository and package-manager
 cache; scratch HOME is temporary. If a necessary system library or local service

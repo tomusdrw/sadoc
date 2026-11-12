@@ -377,6 +377,8 @@ class Worker:
             allow_network=self.cfg.allow_network,
             scrub_env=self.cfg.scrub_env,
             extra_secrets=self._notify_secret_names(),
+            allow_containers=self.cfg.allow_containers,
+            container_runtime=self.cfg.container_runtime,
         )
         try:
             session.start()
@@ -624,6 +626,8 @@ class Worker:
             allow_network=self.cfg.allow_network,
             scrub_env=self.cfg.scrub_env,
             extra_secrets=self._notify_secret_names(),
+            allow_containers=self.cfg.allow_containers,
+            container_runtime=self.cfg.container_runtime,
         )
         try:
             session.start()
@@ -902,6 +906,8 @@ class Worker:
                 allow_network=self.cfg.allow_network,
                 scrub_env=self.cfg.scrub_env,
                 extra_secrets=self._notify_secret_names(),
+                allow_containers=self.cfg.allow_containers,
+                container_runtime=self.cfg.container_runtime,
             )
             try:
                 session.start()
@@ -1607,6 +1613,8 @@ class Worker:
             agent_dir=self.cfg.agent_dir,
             allow_network=self.cfg.allow_network,
             scrub_env=self.cfg.scrub_env,
+            allow_containers=self.cfg.allow_containers,
+            container_runtime=self.cfg.container_runtime,
         )
         try:
             session.start()

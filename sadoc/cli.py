@@ -528,7 +528,11 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    cfg = config_mod.load(args.config)
+    try:
+        cfg = config_mod.load(args.config)
+    except config_mod.ConfigError as exc:
+        _log(f"the configuration is wrong: {exc}")
+        return 1
     if args.db:
         cfg.state_db = Path(args.db)
     if args.dry_run:

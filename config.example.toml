@@ -55,6 +55,12 @@ require_no_unresolved_threads = true
 allow_network = true
 # Remove credentials and API keys from the model's environment.
 scrub_env    = true
+# Rootless containers. When this is on, the agent may build a container image
+# for a test environment - a database, a browser with system libraries -
+# instead of installing it onto the machine. It needs a rootless runtime
+# (podman). The Docker socket is never used: it is root-equivalent.
+allow_containers = false
+container_runtime = "podman"
 
 [behaviour]
 # Attempt major version bumps (they need code changes, so they are slower

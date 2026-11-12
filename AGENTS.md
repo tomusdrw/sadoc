@@ -109,5 +109,10 @@ pipeline end to end.
   See `docs/design.md` §11 for recipe caching and replay invariants.
 - The bubblewrap argument order in `extensions/sandbox.ts` is load-bearing.
 - `semver.classify` treats a minor bump on a `0.x` version as breaking.
+- The container rules live in `sadoc/policy.py`, not in the extension. The
+  extension reads them from `SADOC_CONTAINER_POLICY`. Do not add a rule to
+  either place: add it to `sadoc/policy.py` and it travels to both.
+- Docker is never an allowed runtime, even if the config asks for it. Its
+  socket is root-equivalent.
 
 `docs/design.md` explains each of these.
