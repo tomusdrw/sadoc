@@ -22,6 +22,7 @@ sadoc/          the package
   registry.py      version lookups against the registries
   advisories.py    the GitHub Advisory Database
   semver.py        version parsing and constraint semantics
+  buildcache.py    build-input fingerprints for discovered recipes
   pipeline.py      the green loop, the CI loop, the review loop, auto-merge
   piworker.py      the pi RPC client
   gitops.py        git wrapper
@@ -101,7 +102,11 @@ pipeline end to end.
 
 - `piworker.py` holds stdin open on purpose. Closing it is pi's shutdown signal.
 - `extensions/sandbox.ts` does not re-register the `bash` tool. It mutates the
-  command in a `tool_call` hook instead. Re-registering it breaks execution.
+  command in a `tool_call` hook instead. RPC `bash` bypasses that hook and needs
+  the separate `user_bash` handler. Both paths must stay sandboxed.
+- Discovery cleanup removes ignored files, nested clones, and submodule working
+  trees. It is only for Sadoc's disposable clone, never a user's working copy.
+  See `docs/design.md` §11 for recipe caching and replay invariants.
 - The bubblewrap argument order in `extensions/sandbox.ts` is load-bearing.
 - `semver.classify` treats a minor bump on a `0.x` version as breaking.
 

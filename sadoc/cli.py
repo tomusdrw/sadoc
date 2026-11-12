@@ -322,7 +322,7 @@ def cmd_doctor(args, cfg, gh, state) -> int:
     broken = 0
     for entry in scoped:
         result = worker.doctor_repo(entry["owner"], entry["name"])
-        if result["state"] in ("fixable", "transient"):
+        if result["state"] in ("fixable", "transient", "agent_failed"):
             broken += 1
             _log(f"  {entry['repo']}: {result['state']} - {result['detail']}")
             if result.get("pr"):
