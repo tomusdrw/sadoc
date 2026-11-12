@@ -243,6 +243,8 @@ options that matter most:
 | `schedule.max_prs_per_night` | cap on pull requests per night |
 | `merge.auto_merge_tier` | which tiers may merge themselves |
 | `sandbox.allow_network` | the model needs network to install packages |
+| `sandbox.allow_containers` | build test environments in rootless container images instead of on the machine |
+| `sandbox.container_runtime` | which rootless runtime to use (`podman`; Docker is refused) |
 | `models.<task>` | a different model per task (bump / migrate / fixci / review) |
 | `repos.<name>.verify` | the local verification command for one repository |
 | `persona.*` | the name and voice used in emails and comments |
@@ -256,6 +258,15 @@ project. No particular script name or CI configuration is required. Setup and
 verification run together so environment exports and working-directory changes
 carry through. A project that needs `templ generate` before `go build` does not
 need a hand-written override.
+
+A recipe usually needs a database, a browser or a message broker. With
+`sandbox.allow_containers` on, the agent builds those into a rootless container
+image and runs the checks inside it, instead of installing them on the machine
+where they would need root and have to be installed again on every run. The
+runtime is rootless (`podman` by default); the Docker socket is never used,
+because it is root-equivalent. A container may have the repository and the tool
+cache and nothing else: no privileged mode, no host namespaces, no extra
+capabilities, no host devices, and no host directory outside the workspace.
 
 Before accepting a recipe, Sadoc replays it in the sandbox after resetting its
 disposable clone and removing ignored artifacts as well as untracked files. The
