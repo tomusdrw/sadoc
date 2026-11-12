@@ -388,6 +388,22 @@ def cmd_releases(args, cfg, gh, state) -> int:
     return 0
 
 
+# ------------------------------------------------------------- selfupdate
+def cmd_selfupdate(args, cfg, gh, state) -> int:
+    """Bring Sadoc up to date from the latest main branch.
+
+    Exit codes: 0 - already up to date, 10 - updated, 1 - could not update.
+    """
+    from sadoc import selfupdate
+
+    root = Path(__file__).resolve().parent.parent
+    result = selfupdate.update(root, branch=args.branch)
+    _log(result.message)
+    if not result.ok:
+        return 1
+    return 10 if result.changed else 0
+
+
 # ----------------------------------------------------------------- status
 def cmd_status(args, cfg, gh, state) -> int:
     rows = state.conn.execute(
@@ -461,6 +477,10 @@ def main() -> int:
     p_rel.add_argument("--verbose", action="store_true")
     p_rel.add_argument("--json", action="store_true")
     p_rel.set_defaults(func=cmd_releases)
+
+    p_up = sub.add_parser("selfupdate", help="update Sadoc from the latest main branch")
+    p_up.add_argument("--branch", default="main")
+    p_up.set_defaults(func=cmd_selfupdate)
 
     p_rep = sub.add_parser("report", help="write a markdown digest")
     p_rep.add_argument("--out", default=None)

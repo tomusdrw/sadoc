@@ -39,6 +39,23 @@ run() {
   return "$rc"
 }
 
+# Self-update ---------------------------------------------------------------
+# Sadoc updates itself from the latest main branch before it does anything
+# else. If it pulled something new, the script starts again so that the code
+# which runs is the code that was just fetched - bash reads a script as it
+# goes, so continuing in place would be reading a file that changed under it.
+if [ "${SADOC_SELF_UPDATE:-1}" = "1" ] && [ "${SADOC_REEXEC:-0}" != "1" ]; then
+  log "=== self-update ==="
+  "$SADOC_BIN" selfupdate 2>&1 | tee -a "$LOG"
+  UPDATE_RC="${PIPESTATUS[0]}"
+  if [ "$UPDATE_RC" = "10" ]; then
+    log "updated - starting again with the new version"
+    SADOC_REEXEC=1 exec "$0" "$@"
+  elif [ "$UPDATE_RC" != "0" ]; then
+    log "could not update; continuing with the current version"
+  fi
+fi
+
 # Window helpers -----------------------------------------------------------
 window_from_config() {
   python3 - "$CONFIG" <<'PY' 2>/dev/null || echo "01:00-07:00"
@@ -93,5 +110,6 @@ run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" releases --notify || true
 
 log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"
-"$SADOC_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" 2>&1 | tee -a "$LOG"
+NOTE="Run at $STAMP."
+"$SADOC_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" --note "$NOTE" 2>&1 | tee -a "$LOG"
 log "report written to $REPORT"

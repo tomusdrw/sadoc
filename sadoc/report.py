@@ -11,9 +11,12 @@ from . import config as config_mod
 from .state import State
 
 
-def build(state: State) -> str:
+def build(state: State, note: str = "") -> str:
     now = time.strftime("%Y-%m-%d %H:%M")
     lines = [f"# sadoc report - {now}", ""]
+
+    if note:
+        lines += [note, ""]
 
     rows = state.conn.execute(
         "SELECT repo, COUNT(*) n, "
@@ -95,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--db", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--note", default="", help="a line to put at the top of the report")
     args = parser.parse_args(argv)
 
     cfg = config_mod.load(args.config)
@@ -102,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.state_db = Path(args.db)
     state = State(cfg.state_db)
     try:
-        text = build(state)
+        text = build(state, note=args.note)
     finally:
         state.close()
     if args.out:
