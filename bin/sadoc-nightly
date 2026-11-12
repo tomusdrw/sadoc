@@ -111,5 +111,9 @@ run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" releases --notify || true
 log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"
 NOTE="Run at $STAMP."
-"$SADOC_BIN" report --config "$CONFIG" --db "$STATE_DB" --out "$REPORT" --note "$NOTE" 2>&1 | tee -a "$LOG"
-log "report written to $REPORT"
+# The global options have to come before the subcommand.
+if "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" report --out "$REPORT" --note "$NOTE" 2>&1 | tee -a "$LOG"; then
+  log "report written to $REPORT"
+else
+  log "the report was not written"
+fi

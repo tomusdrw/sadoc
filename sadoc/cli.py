@@ -331,7 +331,7 @@ def cmd_remind(args, cfg, gh, state) -> int:
 def cmd_report(args, cfg, gh, state) -> int:
     from sadoc import report as report_mod
 
-    text = report_mod.build(state)
+    text = report_mod.build(state, note=getattr(args, "note", "") or "")
     if getattr(args, "out", None):
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -522,6 +522,7 @@ def main() -> int:
 
     p_rep = sub.add_parser("report", help="write a markdown digest")
     p_rep.add_argument("--out", default=None)
+    p_rep.add_argument("--note", default="", help="a line to put at the top of the digest")
     p_rep.set_defaults(func=cmd_report)
 
     sub.add_parser("status", help="queue and PR status").set_defaults(func=cmd_status)

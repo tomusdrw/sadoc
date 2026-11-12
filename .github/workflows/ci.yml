@@ -103,3 +103,9 @@ jobs:
       - name: The report command works against an empty database
         run: |
           sadoc --db "$RUNNER_TEMP/state.db" report | head -5
+
+      - name: The report command writes a digest with a note
+        run: |
+          sadoc --db "$RUNNER_TEMP/state.db" report --out "$RUNNER_TEMP/report.md" --note "Run at 000000."
+          test -s "$RUNNER_TEMP/report.md"
+          grep -q "Run at 000000." "$RUNNER_TEMP/report.md"
