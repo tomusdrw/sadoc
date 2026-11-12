@@ -114,5 +114,10 @@ pipeline end to end.
   either place: add it to `sadoc/policy.py` and it travels to both.
 - Docker is never an allowed runtime, even if the config asks for it. Its
   socket is root-equivalent.
+- The container runtime runs **outside** bubblewrap, reached through a shim
+  and a unix socket. It has to: bubblewrap empties the capability bounding
+  set, so `newuidmap` cannot work inside it and an image that runs as its own
+  user cannot start. The helper applies the same policy before running
+  anything. Do not "simplify" this by running the runtime inside the sandbox.
 
 `docs/design.md` explains each of these.

@@ -183,3 +183,54 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "behave as expected" in result.stdout
+
+
+def test_the_container_helper_reaches_the_runtime_and_applies_the_policy(tmp_path):
+    """The sandbox reaches the runtime, and the runtime stays inside the policy."""
+    import shutil
+    import subprocess
+
+    bun = shutil.which("bun")
+    if not bun:
+        import pytest
+
+        pytest.skip("bun is not installed")
+    runtime = os.environ.get("SADOC_CONTAINER_RUNTIME", "podman")
+    if not shutil.which(runtime):
+        import pytest
+
+        pytest.skip(f"{runtime} is not installed")
+
+    root = Path(__file__).resolve().parent.parent
+    stub = tmp_path / "node_modules" / "@earendil-works" / "pi-coding-agent"
+    stub.mkdir(parents=True)
+    (stub / "package.json").write_text(
+        '{"name": "@earendil-works/pi-coding-agent", "version": "0.0.0",'
+        ' "type": "module", "main": "index.js"}'
+    )
+    (stub / "index.js").write_text(
+        "export function createLocalBashOperations() { return { exec: async () =>"
+        " ({ output: '', exitCode: 0 }) }; }\n"
+    )
+    (tmp_path / "sandbox.ts").write_text((root / "extensions" / "sandbox.ts").read_text())
+    (tmp_path / "run.ts").write_text((root / "tests" / "container_helper.ts").read_text())
+    (tmp_path / "repo").mkdir()
+
+    result = subprocess.run(
+        [bun, "run", "run.ts"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "SADOC_CONTAINER_POLICY": policy.policy_json(),
+            "SADOC_WORKSPACE": str(tmp_path / "repo"),
+            "SADOC_CACHE_DIR": str(tmp_path / "cache"),
+            "SADOC_ALLOW_CONTAINERS": "1",
+            "SADOC_ALLOW_NET": "1",
+            "SADOC_CONTAINER_RUNTIME": runtime,
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "container helper checks pass" in result.stdout

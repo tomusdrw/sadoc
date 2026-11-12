@@ -8,7 +8,7 @@
  * Run it with bun:
  *   SADOC_CONTAINER_POLICY='{"container": [...], "runtimes": [...]}' bun run run.ts
  */
-import { policyReason } from "./sandbox.ts";
+import { policyReason, containerReason } from "./sandbox.ts";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
 
@@ -66,4 +66,32 @@ for (const [cmd, runtime, shouldBlock] of cases) {
 	}
 }
 console.log(`  ${cases.length - bad}/${cases.length} policy cases behave as expected`);
-process.exit(bad === 0 ? 0 : 1);
+
+// The helper runs the runtime outside the sandbox, so it applies the
+// container rules on its own. These are the same rules, checked against the
+// argument list the helper receives.
+const containerCases: Array<[string, boolean]> = [
+	["run --rm -v .:/w -w /w node:22 npm test", false],
+	["build -t thing .", false],
+	["run --rm --privileged -v /:/host alpine", true],
+	["run --rm --network=host alpine", true],
+	["run --rm --pid=host alpine", true],
+	["run --rm --cap-add=SYS_ADMIN alpine", true],
+	["run --rm --device /dev/sda alpine", true],
+	["run --rm -v /etc:/etc alpine", true],
+	["run --rm -v /:/host alpine", true],
+	["run --rm --mount source=/etc,target=/etc alpine", true],
+];
+let containerBad = 0;
+for (const [argv, shouldBlock] of containerCases) {
+	const reason = containerReason(argv);
+	const blocked = reason !== null;
+	if (blocked !== shouldBlock) {
+		containerBad++;
+		console.log(`  MISMATCH: container ${argv} -> ${reason ?? "allowed"}`);
+	}
+}
+console.log(
+	`  ${containerCases.length - containerBad}/${containerCases.length} container cases behave as expected`,
+);
+process.exit(bad === 0 && containerBad === 0 ? 0 : 1);

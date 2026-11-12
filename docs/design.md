@@ -103,6 +103,31 @@ That matters: if the model could not run the runtime while it was working out
 how the project builds, it could never discover a containerised recipe in the
 first place.
 
+### The runtime runs outside bubblewrap
+
+bubblewrap empties the capability bounding set. `newuidmap` carries its
+capability as a file capability, and a file capability is masked by the
+bounding set, so inside the sandbox it cannot work:
+
+```
+newuidmap: Could not set caps
+Error: cannot set up namespace using "/usr/bin/newuidmap": exit status 1
+```
+
+Without it, podman falls back to a single id mapping, where every uid in the
+image except one is unmapped. An image that runs as its own user - a database,
+nearly all of them - cannot start.
+
+So the runtime runs **outside** the sandbox. The sandbox sees a shim in place
+of the runtime; the shim hands the request over a unix socket to a helper in
+the pi process, and the helper applies the same policy before running
+anything. The rest of the recipe stays inside bubblewrap, so the write
+protection is unchanged: only the runtime itself is outside it.
+
+The helper is the pi process, so it never holds a credential the model could
+reach, and it runs the runtime with the user's own environment and a normal
+user namespace.
+
 Images and containers live under the persistent tool cache, so the image is
 built once and reused.
 

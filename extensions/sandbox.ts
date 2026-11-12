@@ -11,12 +11,20 @@
  *  2. The agent can never mutate remote state. git push / gh pr create / gh api
  *     writes / sudo / systemctl are blocked outright - the orchestrator owns those.
  *  3. File writes are restricted to the workspace directory.
+ *  4. A container runtime runs outside the sandbox, reached through a helper
+ *     that applies the same policy. bubblewrap empties the capability bounding
+ *     set, so a rootless runtime cannot set up a container with a normal id
+ *     mapping inside it; images that run as a non-root user need one.
  *
  * The pi process itself keeps network access (it must reach the LLM server);
  * only the agent's shell commands are network-isolated.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
+import { join } from "node:path";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
 const ALLOW_NET = process.env.SADOC_ALLOW_NET === "1";
@@ -28,6 +36,13 @@ const TOOL_CACHE = process.env.SADOC_CACHE_DIR || "/tmp/depsbot-toolcache";
 const ALLOW_CONTAINERS = process.env.SADOC_ALLOW_CONTAINERS === "1";
 const RUNTIME = process.env.SADOC_CONTAINER_RUNTIME || "podman";
 const SHELL_TOOLS = new Set(["bash", "shell"]);
+
+// Where the container helper keeps its socket, its images and the shim that
+// the sandbox sees in place of the runtime.
+const CONTAINER_DIR = join(TOOL_CACHE, "containers");
+const CONTAINER_RUN = join(CONTAINER_DIR, "run");
+const CONTAINER_BIN = join(CONTAINER_DIR, "bin");
+const CONTAINER_SOCKET = join(CONTAINER_RUN, "sadoc.sock");
 
 const FORBIDDEN: Array<[RegExp, string]> = [
 	[/\bgit\s+push\b/i, "git push"],
@@ -105,8 +120,7 @@ function q(s: string): string {
  * A source that is relative, or that the shell expands, is inside the sandbox
  * already; a source that names a host directory is not.
  */
-function mountSourceViolation(command: string): string | null {
-	const roots = [WORKSPACE, TOOL_CACHE];
+function mountSourceViolation(command: string, roots: string[] = [WORKSPACE, TOOL_CACHE]): string | null {
 	const patterns = [
 		/(?:-v|--volume)[= ]+("[^"]*"|'[^']*'|[^\s:]+)/g,
 		/--mount[= ][^\n]*?\bsource=("[^"]*"|'[^']*'|[^\s,]+)/g,
@@ -133,6 +147,180 @@ function mountSourceViolation(command: string): string | null {
 		}
 	}
 	return null;
+}
+
+// ---------------------------------------------------------------------
+// The container helper.
+//
+// bubblewrap empties the capability bounding set, so `newuidmap` cannot work
+// inside it and a rootless runtime falls back to a single id mapping. Images
+// that run as a non-root user - a database, most of them - need a normal
+// mapping, so the runtime runs outside the sandbox instead.
+//
+// The sandbox sees a shim in place of the runtime. The shim hands the request
+// to this helper, which applies the same policy before running anything, so
+// nothing reaches the machine that the policy forbids. The rest of the recipe
+// stays inside bubblewrap.
+
+const SHIM = `#!/usr/bin/env python3
+"""Hands a container command to the helper that runs outside the sandbox."""
+import json
+import os
+import socket
+import sys
+
+
+def main():
+    path = os.environ.get("SADOC_CONTAINER_SOCKET")
+    if not path:
+        sys.stderr.write("sadoc: the container helper is not running\\n")
+        return 127
+    request = json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}).encode()
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.connect(path)
+        conn.sendall(request + b"\\n")
+        conn.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            data = conn.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+    except OSError as exc:
+        sys.stderr.write("sadoc: cannot reach the container helper: %s\\n" % exc)
+        return 127
+    try:
+        response = json.loads(b"".join(chunks))
+    except ValueError:
+        sys.stderr.write("sadoc: the container helper sent nonsense\\n")
+        return 127
+    sys.stdout.write(response.get("stdout", ""))
+    sys.stderr.write(response.get("stderr", ""))
+    return int(response.get("code", 1))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`;
+
+/** The reason a runtime invocation is not allowed, or null if it is fine. */
+export function containerReason(argv: string): string | null {
+	for (const [pattern, label] of CONTAINER_FORBIDDEN) {
+		if (pattern.test(argv)) {
+			return label;
+		}
+	}
+	return mountSourceViolation(argv);
+}
+
+function containerEnvironment(): NodeJS.ProcessEnv {
+	return {
+		...process.env,
+		// The images and the containers live in the tool cache, not in the
+		// real home.
+		XDG_DATA_HOME: join(CONTAINER_DIR, "data"),
+		XDG_RUNTIME_DIR: CONTAINER_RUN,
+		TMPDIR: "/tmp",
+		// The shim must not be found again by the helper itself.
+		PATH: (process.env.PATH ?? "").split(":").filter((dir) => dir !== CONTAINER_BIN).join(":"),
+	};
+}
+
+function handleContainerRequest(conn: Socket, chunk: Buffer): void {
+	try {
+		serveContainerRequest(conn, chunk);
+	} catch (exc) {
+		process.stderr.write(`sadoc: the container helper failed: ${exc}\n`);
+		try {
+			conn.end(
+				JSON.stringify({ code: 1, stdout: "", stderr: `sadoc: the container helper failed: ${exc}\n` }),
+			);
+		} catch {
+			/* the agent went away */
+		}
+	}
+}
+
+function serveContainerRequest(conn: Socket, chunk: Buffer): void {
+	let request: { argv?: unknown; cwd?: unknown } = {};
+	try {
+		request = JSON.parse(chunk.toString());
+	} catch {
+		conn.end(JSON.stringify({ code: 1, stdout: "", stderr: "sadoc: broken request\n" }));
+		return;
+	}
+	const argv = Array.isArray(request.argv) ? request.argv.map((arg) => String(arg)) : [];
+	const reason = containerReason(argv.join(" "));
+	if (reason) {
+		conn.end(
+			JSON.stringify({
+				code: 1,
+				stdout: "",
+				stderr: `Blocked by sadoc policy: ${reason}\n`,
+			}),
+		);
+		return;
+	}
+	const cwd = typeof request.cwd === "string" ? request.cwd : WORKSPACE;
+	let child;
+	try {
+		child = spawn(RUNTIME, argv, { cwd, env: containerEnvironment() });
+	} catch (exc) {
+		conn.end(
+			JSON.stringify({ code: 1, stdout: "", stderr: `sadoc: cannot run ${RUNTIME}: ${exc}\n` }),
+		);
+		return;
+	}
+	let stdout = "";
+	let stderr = "";
+	child.stdout?.on("data", (data) => {
+		stdout += String(data);
+	});
+	child.stderr?.on("data", (data) => {
+		stderr += String(data);
+	});
+	child.on("error", (exc) => {
+		stderr += `sadoc: ${exc}\n`;
+	});
+	child.on("close", (code) => {
+		conn.end(
+			JSON.stringify({
+				code: code ?? 1,
+				stdout: stdout.slice(-1000000),
+				stderr: stderr.slice(-1000000),
+			}),
+		);
+	});
+}
+
+/** Start the helper and put the shim where the sandbox will find it. */
+export function startContainerHelper(): void {
+	mkdirSync(join(CONTAINER_DIR, "data"), { recursive: true });
+	mkdirSync(CONTAINER_RUN, { recursive: true });
+	mkdirSync(CONTAINER_BIN, { recursive: true });
+	const shim = join(CONTAINER_BIN, RUNTIME);
+	writeFileSync(shim, SHIM, { mode: 0o755 });
+	chmodSync(shim, 0o755);
+	if (existsSync(CONTAINER_SOCKET)) {
+		unlinkSync(CONTAINER_SOCKET);
+	}
+	// allowHalfOpen: the shim closes its end of the connection once it has
+	// sent the request, and waits for the answer. Without this the server
+	// would close the connection the moment it sees that end, and the answer
+	// would never arrive.
+	const server = createServer({ allowHalfOpen: true }, (conn) => {
+		conn.on("data", (chunk: Buffer) => {
+			handleContainerRequest(conn, chunk);
+		});
+		conn.on("error", () => {
+			/* the agent went away mid-request */
+		});
+	});
+	server.on("error", (exc) => {
+		process.stderr.write(`sadoc: the container helper could not start: ${exc}\n`);
+	});
+	server.listen(CONTAINER_SOCKET);
 }
 
 /**
@@ -200,16 +388,16 @@ export function buildSandbox(command: string, cwd: string): string {
 		`export PIP_CACHE_DIR=${q(cache)}/pip`,
 		`export UV_CACHE_DIR=${q(cache)}/uv`,
 		`export BUN_INSTALL_CACHE_DIR=${q(cache)}/bun`,
-		// A rootless runtime keeps its images and containers in the cache
-		// directory, not in the real home.
+		// The runtime the agent should use, so it does not have to guess.
 		...(ALLOW_CONTAINERS
 			? [
-				`export XDG_DATA_HOME=${q(cache)}/containers/data`,
-				`export XDG_RUNTIME_DIR=${q(cache)}/containers/run`,
-				// The runtime the agent should use, so it does not have to guess.
 				`export SADOC_CONTAINER_RUNTIME=${q(RUNTIME)}`,
-				`mkdir -p ${q(cache)}/containers/data ${q(cache)}/containers/run`,
-				`chmod 700 ${q(cache)}/containers/run`,
+				`export SADOC_CONTAINER_SOCKET=${q(CONTAINER_SOCKET)}`,
+				// The shim stands in for the runtime: the real one runs outside
+				// the sandbox, because bubblewrap takes away the capabilities a
+				// rootless runtime needs. The path is set after the profile
+				// files, which may replace it.
+				`export PATH=${q(CONTAINER_BIN)}:$PATH`,
 			]
 			: []),
 		command,
@@ -247,6 +435,11 @@ export function buildSandbox(command: string, cwd: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	if (ALLOW_CONTAINERS) {
+		// The runtime runs outside the sandbox; the shim inside it hands the
+		// request over here.
+		startContainerHelper();
+	}
 	// RPC `bash` is a user command, not a model tool call. It does not pass
 	// through tool_call, but runs the same discovered, untrusted build recipe.
 	pi.on("user_bash", (event: any) => {

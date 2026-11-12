@@ -52,9 +52,13 @@ every time it is replayed.
 **Prefer a container for anything that needs a service.** A database, a message
 broker, a browser with system libraries - anything that would mean installing
 software onto the machine or compiling a service from source - belongs in a
-container image, not in the cache. The runtime is the one named by
-`SADOC_CONTAINER_RUNTIME` (normally `podman`); it runs rootless, so it needs no
-privileges, and the image and its containers live under `$SADOC_TOOL_CACHE`.
+container image, not in the cache.
+
+The runtime is the one named by `SADOC_CONTAINER_RUNTIME` (normally `podman`).
+It runs rootless, so it needs no privileges, and it has a normal user
+namespace, so an image that runs as its own user - a database, nearly all of
+them - works as it should. The images and the containers live under
+`$SADOC_TOOL_CACHE/containers`, so a later run finds them already in place.
 Build the image once and run the checks inside it.
 
 A container must stay inside the workspace: no `--privileged`, no host
@@ -62,15 +66,22 @@ network, no host pid/ipc/uts namespace, no extra capabilities, no host
 device, and no mounting anything from the host outside the workspace. Those are
 blocked. Bind the repository and the cache into the container, and nothing else.
 
+The runtime is reached through a helper, so it works exactly as the `podman`
+command does: `podman build`, `podman run`, `podman ps`, `podman images`. The
+container has the network when the sandbox allows it.
+
 If the runtime does not work here, say so under PREREQUISITES and install the
 service into the cache instead.
 
 Either way, the recipe has to be self-contained and repeatable: it creates what
 it needs, runs the checks, and cleans up after itself.
 
-Use installed or project-pinned toolchains. You have no root, sudo, systemd,
-Docker or Podman. Writable locations are the repository and package-manager
-cache; scratch HOME is temporary. If a necessary system library or local service
+Use installed or project-pinned toolchains. You have no root, sudo or systemd
+on the machine, and no Docker: the Docker socket is root-equivalent and is
+never used. The container runtime named by `SADOC_CONTAINER_RUNTIME` is
+available, and inside a container you are root. Writable locations are the
+repository, the package-manager cache and the container runtime's own storage;
+scratch HOME is temporary. If a necessary system library or local service
 cannot be provided within these constraints, explain it under PREREQUISITES.
 
 Identify the tracked files and directories that define this recipe: configuration,
