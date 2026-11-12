@@ -149,6 +149,13 @@ class State:
         "prs": {
             "ci_attempts": "INTEGER DEFAULT 0",
         },
+        "repo_setup": {
+            "setup_command": "TEXT DEFAULT ''",
+            "fingerprint": "TEXT DEFAULT ''",
+            "ci_only": "TEXT DEFAULT ''",
+            "verify_output": "TEXT DEFAULT ''",
+            "build_inputs": "TEXT DEFAULT ''",
+        },
     }
 
     def __init__(self, path: str | Path = DEFAULT_DB):
@@ -310,17 +317,40 @@ class State:
         prerequisites: str = "",
         notes: str = "",
         status: str = "ok",
+        *,
+        setup_command: str = "",
+        fingerprint: str = "",
+        ci_only: str = "",
+        verify_output: str = "",
+        build_inputs: str = "",
     ) -> None:
         """Remember how to build a repository, so it only has to be worked out once."""
         now = time.time()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO repo_setup (repo,verify_command,prerequisites,notes,status,"
-                "created_at,updated_at) VALUES (?,?,?,?,?,?,?) "
+                "created_at,updated_at,setup_command,fingerprint,ci_only,verify_output,build_inputs) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(repo) DO UPDATE SET verify_command=excluded.verify_command,"
                 "prerequisites=excluded.prerequisites, notes=excluded.notes,"
-                "status=excluded.status, updated_at=excluded.updated_at",
-                (repo, verify_command, prerequisites[:1000], notes[:2000], status, now, now),
+                "status=excluded.status, updated_at=excluded.updated_at, "
+                "setup_command=excluded.setup_command, fingerprint=excluded.fingerprint, "
+                "ci_only=excluded.ci_only, verify_output=excluded.verify_output, "
+                "build_inputs=excluded.build_inputs",
+                (
+                    repo,
+                    verify_command,
+                    prerequisites[:1000],
+                    notes[:2000],
+                    status,
+                    now,
+                    now,
+                    setup_command,
+                    fingerprint,
+                    ci_only[:2000],
+                    verify_output[-20000:],
+                    build_inputs,
+                ),
             )
 
     def setup(self, repo: str) -> sqlite3.Row | None:

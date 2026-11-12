@@ -254,7 +254,12 @@ class PiSession:
             etype = event.get("type")
             self.transcript.append(event)
 
-            if etype == "message_update":
+            if etype == "response" and event.get("id") == req_id:
+                if not event.get("success"):
+                    raise PiError(event.get("error") or "pi rejected the prompt")
+                if (event.get("data") or {}).get("disposition") == "handled":
+                    raise PiError("pi handled the prompt without starting an agent run")
+            elif etype == "message_update":
                 ev = event.get("assistantMessageEvent", {})
                 et = ev.get("type")
                 if et == "text_delta":
@@ -309,12 +314,12 @@ class PiSession:
                     result.error = msg.get("errorMessage")
                     if msg.get("usage"):
                         result.usage = msg["usage"]
-                    # Prefer the assembled text over the streamed deltas.
+                    # This message is authoritative, even when empty: an earlier
+                    # tool-call preamble or retry must not become the final report.
                     assembled = "".join(
                         c.get("text", "") for c in msg.get("content", []) if c.get("type") == "text"
                     )
-                    if assembled:
-                        result.text = assembled
+                    result.text = assembled
                     # Tool calls are reported as content blocks on the message.
                     for c in msg.get("content", []):
                         if c.get("type") == "toolCall":
@@ -330,6 +335,14 @@ class PiSession:
                 break
 
         result.duration_s = time.time() - started
+        if result.error:
+            raise PiError(result.error)
+        if not result.settled:
+            raise PiError(f"pi prompt timed out after {result.duration_s:.1f}s")
+        if not result.text.strip():
+            raise PiError("pi returned an empty response")
+        if result.stop_reason != "stop":
+            raise PiError(f"pi prompt did not complete (stop reason: {result.stop_reason})")
         return result
 
     def bash(self, command: str, timeout: int = 600) -> dict:

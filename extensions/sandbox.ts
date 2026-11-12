@@ -16,6 +16,7 @@
  * only the agent's shell commands are network-isolated.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
 const ALLOW_NET = process.env.SADOC_ALLOW_NET === "1";
@@ -106,6 +107,25 @@ export function buildSandbox(command: string, cwd: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	// RPC `bash` is a user command, not a model tool call. It does not pass
+	// through tool_call, but runs the same discovered, untrusted build recipe.
+	pi.on("user_bash", (event: any) => {
+		for (const [pattern, label] of FORBIDDEN) {
+			if (pattern.test(event.command)) {
+				return { result: {
+					output: `Blocked by sadoc policy: ${label}`,
+					exitCode: 1, cancelled: false, truncated: false,
+				} };
+			}
+		}
+		const local = createLocalBashOperations();
+		return { operations: {
+			exec(command: string, cwd: string, options: any) {
+				return local.exec(buildSandbox(command, cwd), cwd, options);
+			},
+		} };
+	});
+
 	pi.on("tool_call", async (event: any) => {
 		if (SHELL_TOOLS.has(event.toolName)) {
 			const command = String(event.input.command ?? "");

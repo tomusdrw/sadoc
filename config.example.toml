@@ -76,6 +76,7 @@ reasoning  = true
 
 # Per-task overrides. "bump" edits manifests, "migrate" fixes breaking
 # changes, "fixci" fixes a failing CI run, "review" answers review comments.
+# Optional "prepare" discovers project setup; when omitted it uses "bump".
 [models.bump]
 model    = "local-model"
 base_url = "http://127.0.0.1:8080/v1"
@@ -133,9 +134,12 @@ comment_signoff = "\n\n— Sadoc"
 
 # Per-repository overrides ---------------------------------------------------
 # The local verification command is the gate that runs before a pull request
-# is opened. Without one, the only gate is CI.
+# is opened. Without an override, pi discovers and validates a local recipe.
+# Discovery failure blocks updates; it never silently falls back to CI alone.
+# An override must include all setup/generation steps as well as build/tests.
+# Owner-qualified overrides take precedence over legacy repository-name keys.
 #
-# [repos."my-repo"]
+# [repos."my-owner/my-repo"]
 # verify = "npm ci --no-audit && npm run typecheck && npm test"
 #
 # [repos."other-repo"]

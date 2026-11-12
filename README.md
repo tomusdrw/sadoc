@@ -250,11 +250,79 @@ options that matter most:
 
 ### Working out how to build a project
 
-With no `verify` command configured, the agent reads the CI workflow and works out
-the build and test commands itself - including any code generation that has to
-happen first - runs them until they work, and remembers the result. A repository
-whose CI runs `templ generate` before `go build` is handled without a hand-written
-override.
+With no `verify` override configured, pi reads project documentation, manifests,
+scripts and CI workflows to discover how to install, generate, build and test the
+project. No particular script name or CI configuration is required. Setup and
+verification run together so environment exports and working-directory changes
+carry through. A project that needs `templ generate` before `go build` does not
+need a hand-written override.
+
+Before accepting a recipe, Sadoc replays it in the sandbox after resetting its
+disposable clone and removing ignored artifacts as well as untracked files. The
+recipe, prerequisites, verification output and checks requiring CI/production
+access are saved in the local SQLite database under `owner/repository`. Nothing
+is added to the target repository. Production checks are recorded separately;
+the discovery agent must not deploy or run tests against live production.
+
+Validated recipes are reused across unrelated application-source and test changes.
+Rediscovery happens when build inputs change: manifests, lockfiles, toolchain and
+CI configuration, build instructions, conventional script/config directories,
+and additional files or directories identified during discovery. Added, deleted,
+renamed and edited inputs count, as do tracked symlink targets, submodule revisions
+and sandbox network-policy changes. Ordinary checks still run before opening a PR.
+
+Discovery reports without an input list conservatively track the whole Git tree.
+An explicit empty list means the conventional inputs are sufficient; custom
+layouts can name files or entire directories. Failures are tried once per complete
+repository revision per worker, then retried on the next run. Existing databases
+migrate automatically, and older recipe fingerprints are rediscovered once.
+
+Failures distinguish agent errors, malformed reports, unmet prerequisites,
+existing project test failures, and recipes that fail clean-checkout replay.
+Missing verification is never treated as a passing check. For a manual override,
+`[repos."owner/repository"]` with `verify = "..."` takes precedence over the
+existing `[repos.repository]` form. An optional `[models.prepare]` selects the
+discovery model; otherwise the bump model is used.
+
+No extra setup command is needed to enable discovery: it runs automatically when
+Sadoc processes updates. Overrides must include dependency installation and code
+generation too, since they replace the entire discovered recipe.
+
+For `agent_failed`, check the configured pi/model endpoint; for `blocked`, supply
+the reported local prerequisites. `baseline_failed` means a check failed before
+dependency changes. `validation_failed` means the saved commands could not
+reproduce discovery's result. `cleanup_failed` means the disposable checkout or
+agent could not be cleaned up. Fix the reported cause and start a new run to retry
+a failed discovery; its failed cache entry does not permanently disable a repo.
+
+To inspect the local recipe and diagnostics, run this from the Sadoc checkout
+(replace `owner/repository`; pass a config path to `load()` if needed):
+
+```python
+import sqlite3
+from sadoc.config import load
+
+db = sqlite3.connect(load().state_db.resolve().as_uri() + "?mode=ro", uri=True)
+db.row_factory = sqlite3.Row
+try:
+    row = db.execute("SELECT * FROM repo_setup WHERE repo = ?", ("owner/repository",)).fetchone()
+    if row is None:
+        print("No discovery recorded for this repository yet.")
+    else:
+        for key in (
+            "status",
+            "setup_command",
+            "verify_command",
+            "prerequisites",
+            "ci_only",
+            "build_inputs",
+            "notes",
+            "verify_output",
+        ):
+            print(f"{key}: {row[key]}")
+finally:
+    db.close()
+```
 
 ### The default branch
 

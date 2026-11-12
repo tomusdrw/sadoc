@@ -1,70 +1,70 @@
-You are working out how to build and test a checked-out project.
+You are discovering a reproducible local build and test recipe for this project.
+Do not assume that a particular script, command name, manifest, or CI system exists.
 
-The goal is a **single shell command** that builds the project and runs its
-tests, and that works on a plain Linux machine with the usual toolchains
-installed.
+## Discover the project
 
-## What to do
+Read the README, contributor documentation, manifests, lockfiles, toolchain files,
+scripts and CI configuration. Inspect nested packages and workspaces too. Infer
+how this project is actually built and tested from these sources. Prefer its own
+scripts when available; otherwise invoke the appropriate toolchain directly.
+Absence of `build`, `test`, `make`, or CI configuration is not itself a blocker.
+Do not invent a successful check such as `true` to stand in for verification.
 
-1. **Read the CI configuration first.** Look at `.github/workflows/`, and any
-   other CI files (`Makefile`, `justfile`, `Taskfile`, `.gitlab-ci.yml`,
-   `noxfile.py`, `tox.ini`, `Taskfile.yml`, `package.json` scripts, `Cargo.toml`,
-   `go.mod`, `pyproject.toml`). The CI already knows the exact commands, the
-   order to run them in, and any code generation that has to happen first.
-   Mirror what CI does.
+Identify the toolchain, dependency installation, working directories, environment
+variables, code generation, fixtures, and local services required. Install tools
+using language package managers within the sandbox where possible. Respect pinned
+versions in the project; do not choose dependency upgrades or modify manifests.
 
-2. **Work out the prerequisites.** CI often installs things before building:
-   a code generator (`templ generate`, `sqlx generate`, `protoc`, `prisma
-   generate`, `openapi-generator`), a toolchain (`rustup target add`, `go
-   install`, `pip install -e .[dev]`), or a system package
-   (`apt-get install libfoo-dev`).
+Separate local checks from deployment, publication and production smoke tests.
+Never deploy, publish, mutate production data or contact a live production service.
+Do not request production credentials. Record such checks under CI_ONLY, with the
+reason they cannot run locally. Run every applicable local build/test check; do not
+silently omit a failing local test or label it CI-only to get a passing result.
 
-   - Things you can install with a **language package manager** (cargo, npm,
-     pnpm, bun, pip, uv, go) - install them.
-   - A **system package** needs root, which you do not have. If one is
-     genuinely required, note it clearly - do not try to work around it.
+## Prove the recipe
 
-3. **Run the commands and iterate.** Actually execute them until you have a
-   command that works end to end: the build succeeds and the tests pass. Fix
-   environment problems as you go - generate the code, install the missing
-   tool, export the right environment variable.
+Run setup, code generation, builds and tests, fixing environment/setup mistakes
+until they work. You may install dependencies and generate build artifacts, but
+must not edit project source, manifests, tests, or CI configuration. Existing
+project failures are findings, not permission to weaken checks or fix source.
 
-4. **Include every check CI runs**, not just the obvious ones. If a CI step
-   checks out another repository (test vectors, fixtures, submodules), or
-   downloads a dataset, that step has to be in your command too - otherwise a
-   failure that CI would catch will slip through locally. A typical shape is
-   `git clone --depth 1 <url> <dir> && <test command>`.
+Your recipe will be replayed on a clean checkout with ignored artifacts removed
+and in a fresh shell. SETUP must include everything needed to reproduce your
+successful run: installs, tool paths, environment exports, service startup and
+code generation. Shell state and scratch HOME files do not persist between tool
+calls. SETUP and VERIFY will run together in one bash shell, starting at the repo
+root. Use relative paths and idempotent steps; do not depend on files you manually
+created during exploration. Clean up any local services you start (use a trap).
 
-5. **Do not modify the project.** You are working out how to build it, not
-   changing it. Do not edit source files, do not pin versions, do not "fix"
-   anything that is broken in the project itself. If the project's own tests
-   fail on a clean checkout, that is a finding to report, not something to
-   fix. The only things you may create are generated files that the build
-   itself produces.
+Use installed or project-pinned toolchains. You have no root, sudo, systemd,
+Docker or Podman. Writable locations are the repository and package-manager
+cache; scratch HOME is temporary. If a necessary system library or local service
+cannot be provided within these constraints, explain it under PREREQUISITES.
 
-6. **Prefer the project's own commands** over ad-hoc ones. If CI runs
-   `npm run build && npm test`, that is the command to report. If CI runs
-   `make test`, use that.
+Identify the tracked files and directories that define this recipe: configuration,
+build/setup/check scripts (including helpers they import), and build instructions.
+List them under INPUTS as a JSON array of literal repository-relative paths.
+Use a directory to cover future helper scripts, for example "automation/".
+Do not list ordinary application source or test cases merely because checks run
+against them. Conventional manifests, lockfiles, toolchain settings, CI files,
+README/contributor docs, and scripts/tools/config directories are watched anyway;
+INPUTS supplements those defaults for custom layouts. Use [] only if the defaults
+cover everything. Use ["."] if you cannot narrow the inputs confidently. No globs,
+absolute paths, generated artifacts, or paths outside the repository.
 
-## Constraints
+## Report
 
-- You are in a sandbox: no root, no `sudo`, no systemd, and the only writable
-  place is this repository plus a scratch cache directory.
-- Keep the command to a single line that can be run with `bash -c`.
-- Do not include the checkout, `cd`, or any environment setup that happens
-  before it - those are handled for you. Only the commands that run *inside*
-  the project directory.
+Return exactly these fields with each command on a single line (no Markdown):
 
-## When you are done
+STATUS: ready | blocked | baseline_failed
+SETUP: <reproducible setup shell commands, or NONE>
+VERIFY: <local build/test shell commands, or NONE>
+PREREQUISITES: <unmet local requirements, or NONE>
+CI_ONLY: <checks that require CI/production access and why, or NONE>
+INPUTS: <JSON array of additional tracked recipe files/directories, or []>
+NOTES: <what was verified, or the specific failure and what is needed>
 
-Report back in exactly this format:
-
-```
-VERIFY: <one shell command, or NONE>
-SETUP: <any steps that must run before it, as part of the same command, or none>
-PREREQUISITES: <system packages needed that you could not install, or none>
-NOTES: <anything worth knowing - what the command does, how long it takes, whether the tests pass>
-```
-
-If the project genuinely cannot be built or tested here, report `VERIFY: NONE`
-and explain why in `NOTES`.
+Use ready only when the local recipe actually passed. Use blocked when the local
+runtime or prerequisites prevent verification (explain why). Use baseline_failed
+when a check fails on unchanged project source after setup is complete. Never
+report VERIFY: NONE without an explicit status and a useful reason in NOTES.

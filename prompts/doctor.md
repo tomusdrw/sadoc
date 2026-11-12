@@ -2,16 +2,19 @@ You are working out why a repository's default branch is broken, and fixing it.
 
 ## The failure
 
-The job `{JOB}` on `{BRANCH}` failed. The logs are below.
+The job `{{JOB}}` on `{{BRANCH}}` failed. The logs are below.
 
 ```
-{LOGS}
+{{LOGS}}
 ```
 
 ## What to do
 
 1. **Work out the actual cause.** Read the logs carefully. It is often not what
    the first error line suggests - the first error is frequently a consequence.
+   Read the workflow too: a production smoke test or deployment failure does
+   not by itself mean the project cannot build locally. Never deploy, publish,
+   or run tests that mutate a live production service while diagnosing it.
 
    - A **new lint or a new warning from a newer toolchain** - the code is fine,
      the tool moved on. Fix the code the way the lint asks.

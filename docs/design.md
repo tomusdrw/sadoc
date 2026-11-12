@@ -210,3 +210,78 @@ most recent advisories cover recent packages and miss old ones entirely.
 
 The vulnerable version range uses a comparison-list form (`>= 1.0, <= 1.9`), so
 the matcher evaluates every comparison rather than only the first.
+
+---
+
+## 11. Project discovery and recipe replay
+
+`Worker.ensure_build_setup` runs before the dependency-editing session. Pi reads
+`prompts/prepare.md`, explores the checkout, and reports setup and verification
+commands plus unmet prerequisites and checks requiring CI. This is discovery of
+the project's existing process, not permission to pick dependency versions,
+repair source, skip failing local tests, or run production operations.
+
+The recipe is evidence only after independent replay. Discovery saves the
+original commit, resets to it, removes ignored artifacts and nested fixture
+clones, and deinitializes submodules before executing the commands. Final cleanup
+restores that same commit again. `Git.clean(include_ignored=True)` is deliberately
+destructive and must only be used on the orchestrator's disposable clone. Normal
+cleanup retains its less aggressive behavior. Errors during final cleanup are
+recorded alongside the primary error, and prevent a successful recipe from being
+used; they must not erase the agent's actual failure or bypass SQLite recording.
+
+SETUP and VERIFY run in one bash shell so exports and directory changes carry
+through. Failures in setup must stop verification, including failed `&&` lists
+that `bash -e` alone does not catch. Both model tool calls and orchestrator RPC
+`bash` commands use bubblewrap, through `tool_call` and `user_bash` respectively.
+Never restore the old unsandboxed subprocess fallback. RPC cancellation, absent
+exit codes, and rejected commands are failures, regardless of partial output.
+
+`PiSession.prompt` accepts only a settled, nonempty final assistant message with
+stop reason `stop`. Earlier tool-call text and failed retries cannot substitute
+for that report. Pi may recover internally from a provider error, so wait for the
+settled final result rather than rejecting the first failed attempt. Truncation,
+empty replies and timeouts must remain actionable errors, not `VERIFY: NONE`.
+
+`repo_setup` stores recipes under `owner/repository`. `buildcache.py` computes a
+`recipe-v2` fingerprint from committed input paths, file modes and Git object IDs,
+plus the sandbox network policy. It always includes conventional manifests,
+lockfiles, toolchain/hidden configuration, CI, README/contributor documentation,
+shell scripts, and scripts/tools/config directories. Enumerating the current tree
+also detects new matching files, deletions, renames and changed submodule pointers.
+Tracked symlink targets are resolved through Git, never through the host filesystem.
+
+The discovery report's `INPUTS` field supplements these defaults with a JSON array
+of literal relative files/directories for custom scripts and their helpers. The
+normalized list is stored as `build_inputs`. `[]` requests just the defaults;
+`["."]` explicitly watches everything. A missing declaration (empty database field)
+follows the whole tree conservatively. Invalid declarations fail discovery; corrupt
+stored declarations trigger rediscovery. Application-source/test changes that do
+not touch a recipe input reuse the recipe, while actual checks still run on the
+updated checkout. This is a recipe cache, not a cache of passing test results.
+
+Increment the recipe version when changing the contract in a way that invalidates
+previous validation. Schema additions belong in `State.MIGRATIONS` so existing
+installations retain their history. Old fingerprints and short-name entries are
+rediscovered once; short names do not establish ownership. Runtime tool binaries
+and production services are not fingerprinted: every update still executes the
+recipe, and environment failures remain failures rather than cached success.
+
+Failures are persisted for diagnosis and memoized for the worker's current run,
+so multiple update groups do not repeatedly rediscover the same failure. A new
+worker retries failures even with the same tree. Successful cached recipes are
+used across runs. During dependency editing, verification deliberately uses the
+recipe established on the default branch; it must not rediscover a weaker recipe
+from the edited branch just because its tree changed.
+
+Explicit `verify` overrides bypass discovery but still run in the sandbox.
+Owner-qualified config keys win over legacy short-name keys. Automatic discovery
+and its diagnostics remain local; a recipe's CI-only coverage is not a claim that
+those checks passed.
+
+Regression coverage lives in `tests/test_build_setup.py`, with real temporary Git
+repositories and SQLite but a substituted pi process. `tests/test_piworker.py`
+exercises RPC events and, when pi/bwrap are installed, the actual RPC shell sandbox
+without a model call. The normal GitHub test matrix does not install pi, so that
+smoke test is skipped there. An actual model-driven discovery on a disposable
+fixture is an additional manual integration check, not a deterministic unit test.

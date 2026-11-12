@@ -110,10 +110,12 @@ class Git:
     def checkout(self, ref: str) -> None:
         self._run("checkout", ref)
 
-    def clean(self) -> None:
+    def clean(self, include_ignored: bool = False, ref: str = "HEAD") -> None:
         """Remove untracked files and reset tracked ones."""
-        self._run("reset", "--hard", "HEAD")
-        self._run("clean", "-fdq")
+        self._run("reset", "--hard", ref)
+        if include_ignored and (self.path / ".gitmodules").is_file():
+            self._run("submodule", "deinit", "--force", "--all")
+        self._run("clean", "-ffdxq" if include_ignored else "-fdq")
 
     def revert_lines(self, offenders: list[dict]) -> list[str]:
         """Put individual changed lines back the way they were.

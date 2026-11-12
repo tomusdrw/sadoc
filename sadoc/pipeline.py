@@ -12,14 +12,25 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from datetime import UTC
 
-from . import advisories, alerts, dependabot, detect, doctor, persona, release_check, sanitize
+from . import (
+    advisories,
+    alerts,
+    buildcache,
+    dependabot,
+    detect,
+    doctor,
+    persona,
+    release_check,
+    sanitize,
+)
 from .detect import Update
 from .gitops import Git, GitError
-from .piworker import PiModel, PiSession
+from .piworker import PiError, PiModel, PiSession
 
 TIER_A = "A"  # patch + minor
 TIER_B = "B"  # major
@@ -194,6 +205,7 @@ class Worker:
         self.notifier = notifier
         self.persona = persona.load(getattr(cfg, "persona", None))
         self.adv_cache = advisories.AdvisoryCache(gh)
+        self._setup_attempts: dict[tuple[str, str], dict] = {}
 
     def _notify_secret_names(self) -> list[str]:
         """Environment variables that hold notification secrets."""
@@ -283,38 +295,73 @@ class Worker:
         return git
 
     # ------------------------------------------------------------- verify
-    def verify_command(self, repo: str) -> str | None:
-        """The command that builds and tests a repository.
+    def _verify_override(self, repo: str) -> str | None:
+        specific = (self.cfg.repos.get(repo) or {}).get("verify")
+        legacy = (self.cfg.repos.get(repo.rsplit("/", 1)[-1]) or {}).get("verify")
+        return specific or legacy
 
-        In order of preference: an explicit override in the config, then the
-        command that was worked out automatically for this repository.
-        """
-        override = (self.cfg.repos.get(repo) or {}).get("verify")
+    def verify_command(self, repo: str) -> str | None:
+        """Return an explicit override or a validated, owner-qualified recipe."""
+        override = self._verify_override(repo)
         if override:
             return override
         row = self.state.setup(repo)
-        if row is not None and row["verify_command"]:
-            return row["verify_command"]
+        if row is not None and row["status"] == "ok" and row["verify_command"]:
+            return _recipe_command(row["setup_command"], row["verify_command"])
         return None
 
-    def discover_verify_command(self, owner: str, repo: str, branch: str) -> dict:
-        """Work out how to build and test a repository.
+    def ensure_build_setup(self, owner: str, repo: str, branch: str, git: Git) -> dict:
+        """Reuse recipes while their build inputs and sandbox policy are unchanged."""
+        key = f"{owner}/{repo}"
+        override = self._verify_override(key)
+        if override:
+            return {"status": "ok", "verify_command": override, "notes": "explicit override"}
+        row = self.state.setup(key)
+        if row and row["status"] == "ok" and row["verify_command"]:
+            try:
+                inputs = buildcache.parse_inputs(row["build_inputs"] or None)
+                expected = buildcache.fingerprint(git, inputs, allow_network=self.cfg.allow_network)
+            except ValueError:
+                expected = ""  # Corrupt declarations must be rediscovered, not trusted.
+            if expected and row["fingerprint"] == expected:
+                return dict(row)
+        # Failures remain scoped to the entire revision within this run. A source
+        # fix may repair a baseline failure without changing the build recipe.
+        attempt_key = (key, buildcache.fingerprint(git, None, allow_network=self.cfg.allow_network))
+        if attempt_key in self._setup_attempts:
+            return self._setup_attempts[attempt_key]
+        self._safe_log("working out how to build this project", repo=key)
+        result = self.discover_verify_command(owner, repo, branch, git=git)
+        inputs = buildcache.parse_inputs(result["build_inputs"] or None)
+        result["fingerprint"] = buildcache.fingerprint(
+            git, inputs, allow_network=self.cfg.allow_network
+        )
+        self.state.record_setup(key, **result)
+        self._setup_attempts[attempt_key] = result
+        return result
 
-        The agent reads the CI configuration, works out the commands - including
-        any code generation that has to happen first - runs them until they
-        work, and reports the single command to use.
-
-        Returns a dict with the command, the prerequisites and any notes.
-        """
-        result = {"verify_command": None, "prerequisites": "", "notes": "", "status": "unknown"}
-        try:
-            git = self.prepare_clone(owner, repo, branch)
-        except Exception as exc:  # noqa: BLE001
-            result["status"] = "clone_failed"
-            result["notes"] = f"{type(exc).__name__}: {exc}"
-            return result
-
-        model = self.cfg.model_for("bump")
+    def discover_verify_command(
+        self, owner: str, repo: str, branch: str, *, git: Git | None = None
+    ) -> dict:
+        """Ask pi for a recipe, then replay it on a clean disposable checkout."""
+        result = {
+            "verify_command": None,
+            "setup_command": "",
+            "prerequisites": "",
+            "ci_only": "",
+            "notes": "",
+            "verify_output": "",
+            "build_inputs": "",
+            "status": "unknown",
+        }
+        if git is None:
+            try:
+                git = self.prepare_clone(owner, repo, branch)
+            except Exception as exc:  # noqa: BLE001
+                result.update(status="clone_failed", notes=f"{type(exc).__name__}: {exc}")
+                return result
+        original_commit = git.commit_sha()
+        model = self.cfg.models.get("prepare") or self.cfg.model_for("bump")
         spec = PiModel(
             name=f"depsbot-{model.provider}",
             base_url=model.base_url,
@@ -329,50 +376,83 @@ class Worker:
             agent_dir=self.cfg.agent_dir,
             allow_network=self.cfg.allow_network,
             scrub_env=self.cfg.scrub_env,
+            extra_secrets=self._notify_secret_names(),
         )
         try:
             session.start()
-            prompt = load_prompt("prepare")
-            turn = session.prompt(prompt, timeout=3600)
+            turn = session.prompt(load_prompt("prepare"), timeout=3600)
             fields = _parse_report(turn.text)
-            command = fields.get("VERIFY", "").strip()
-            if command.upper().startswith("NONE") or not command:
-                result["status"] = "no_command"
-                result["notes"] = fields.get("NOTES", "") or turn.text[:500]
-                result["prerequisites"] = fields.get("PREREQUISITES", "")
+            for field, key in (
+                ("SETUP", "setup_command"),
+                ("PREREQUISITES", "prerequisites"),
+                ("CI_ONLY", "ci_only"),
+                ("NOTES", "notes"),
+            ):
+                result[key] = _report_value(fields.get(field, ""))
+            command = _report_value(fields.get("VERIFY", ""))
+            status = fields.get("STATUS", "").lower()
+            if status in ("blocked", "baseline_failed"):
+                result["status"] = status
+                result["notes"] = result["notes"] or result["prerequisites"] or turn.text[:2000]
                 return result
-            # Never trust the model with a command that changes remote state.
-            if sanitize.contains_leak(command):
-                command = ""
-            result["verify_command"] = command or None
-            result["prerequisites"] = fields.get("PREREQUISITES", "")
-            result["notes"] = fields.get("NOTES", "")
-            result["status"] = "ok" if command else "no_command"
+            if "VERIFY" not in fields or not command or status not in ("", "ready"):
+                result["status"] = "invalid_report"
+                result["notes"] = (
+                    "Discovery did not return a usable VERIFY recipe. " + turn.text[:1500]
+                )
+                return result
+            if result["prerequisites"]:
+                result["status"] = "blocked"
+                result["notes"] = (
+                    result["notes"] or "Local verification needs additional prerequisites"
+                )
+                return result
+            try:
+                inputs = buildcache.parse_inputs(fields.get("INPUTS"))
+            except ValueError as exc:
+                result.update(status="invalid_report", notes=str(exc))
+                return result
+            result["build_inputs"] = json.dumps(inputs) if inputs is not None else ""
+            result["verify_command"] = command
+            # Remove even ignored artifacts (node_modules, virtualenvs, generated files).
+            # This is a disposable clone owned by the orchestrator, never the user's checkout.
+            git.clean(include_ignored=True, ref=original_commit)
+            ok, output = _execute_recipe(session, _recipe_command(result["setup_command"], command))
+            result["verify_output"] = output
+            result["status"] = "ok" if ok else "validation_failed"
+            if not ok:
+                result["notes"] = "Recipe failed on a clean checkout: " + output[-1500:]
+        except PiError as exc:
+            result.update(status="agent_failed", notes=str(exc))
         except Exception as exc:  # noqa: BLE001
-            result["status"] = "failed"
-            result["notes"] = f"{type(exc).__name__}: {exc}"
+            result.update(status="failed", notes=f"{type(exc).__name__}: {exc}")
         finally:
-            session.close()
+            cleanup_errors = []
+            try:
+                session.close()
+            except Exception as exc:  # noqa: BLE001
+                cleanup_errors.append(f"closing pi: {type(exc).__name__}: {exc}")
+            try:
+                git.clean(include_ignored=True, ref=original_commit)
+            except Exception as exc:  # noqa: BLE001
+                cleanup_errors.append(f"resetting checkout: {type(exc).__name__}: {exc}")
+            if cleanup_errors:
+                # Preserve the original diagnosis and persist both failures. A
+                # passing recipe is not usable if its workspace could not be reset.
+                if result["status"] == "ok":
+                    result["status"] = "cleanup_failed"
+                result["notes"] = (
+                    result["notes"] + "\nCleanup failed: " + "; ".join(cleanup_errors)
+                ).strip()
         return result
 
     def run_verify(self, git: Git, repo: str, session: PiSession | None = None) -> tuple[bool, str]:
         cmd = self.verify_command(repo)
         if not cmd:
-            return True, "no local verify configured"
-        if session is not None:
-            resp = session.bash(cmd, timeout=1800)
-            data = resp.get("data") or {}
-            output = data.get("output", "")
-            code = data.get("exitCode")
-        else:
-            import subprocess
-
-            proc = subprocess.run(
-                cmd, shell=True, cwd=str(git.path), capture_output=True, text=True, timeout=1800
-            )
-            output = (proc.stdout or "") + (proc.stderr or "")
-            code = proc.returncode
-        return code == 0, (output or "")[-20000:]
+            return False, "no validated local verification recipe"
+        if session is None:
+            return False, "local verification requires a sandboxed pi session"
+        return _execute_recipe(session, cmd)
 
     # --------------------------------------------------------------- PR
     def pr_body(self, updates: list[Update], repo: str, tier: str, note: str, ref_id: str) -> str:
@@ -600,6 +680,16 @@ class Worker:
                 )
             )
             return result
+        except PiError as exc:
+            result["state"] = "agent_failed"
+            result["detail"] = f"could not diagnose the failure: {exc}"
+            self._safe_log(result["detail"], repo=f"{owner}/{repo}", level="error")
+            self.notify(
+                alerts.failure(
+                    f"{owner}/{repo}", "diagnosis agent", result["detail"], persona=self.persona
+                )
+            )
+            return result
         finally:
             session.close()
 
@@ -770,45 +860,25 @@ class Worker:
             if self.cfg.disable_dependabot:
                 self._hand_over_from_dependabot(owner, repo, default_branch)
 
-            # --- work out how to build this project ---------------------
-            # The agent reads the CI configuration and works out the build and
-            # test commands itself, including any code generation step. The
-            # result is remembered, so this only happens once per repository.
-            if not self.verify_command(repo):
-                self._safe_log("working out how to build this project", repo=f"{owner}/{repo}")
-                setup = self.discover_verify_command(owner, repo, default_branch)
-                self.state.record_setup(
-                    repo,
-                    setup["verify_command"],
-                    setup["prerequisites"],
-                    setup["notes"],
-                    setup["status"],
-                )
-                if setup["status"] != "ok" or not setup["verify_command"]:
-                    detail = setup["notes"] or setup["status"] or "unknown"
-                    if setup["prerequisites"]:
-                        detail += f" (needs: {setup['prerequisites']})"
-                    result.status = "failed"
-                    result.detail = f"could not work out how to build this project: {detail}"
-                    self._safe_log(result.detail, repo=f"{owner}/{repo}", level="error")
-                    self.state.end_attempt(attempt_id, "failed", result.detail)
-                    self.notify(
-                        alerts.failure(
-                            f"{owner}/{repo}",
-                            "build discovery",
-                            result.detail,
-                            persona=self.persona,
-                        )
+            # --- discover and validate the repository's local build recipe ---
+            setup = self.ensure_build_setup(owner, repo, default_branch, git)
+            if setup["status"] != "ok":
+                detail = setup["notes"] or setup["status"]
+                if setup.get("prerequisites"):
+                    detail += f" (needs: {setup['prerequisites']})"
+                result.status = "failed"
+                result.detail = f"build discovery ({setup['status']}): {detail}"
+                self._safe_log(result.detail, repo=result.repo, level="error")
+                self.state.end_attempt(attempt_id, "failed", result.detail)
+                self.notify(
+                    alerts.failure(
+                        result.repo, "build discovery", result.detail, persona=self.persona
                     )
-                    return result
-                self._safe_log(f"build command: {setup['verify_command']}", repo=f"{owner}/{repo}")
-                # The discovery step may have left generated files behind.
-                # Reset to a pristine tree so they never end up in the commit.
-                git.checkout(default_branch)
-                git.clean()
-                git.create_branch(branch)
-            else:
-                git.create_branch(branch)
+                )
+                return result
+            if setup.get("ci_only"):
+                self._safe_log(f"Checks requiring CI: {setup['ci_only']}", repo=result.repo)
+            git.create_branch(branch)
             result.changes = []
 
             model = self.cfg.model_for("migrate" if tier == TIER_B else "bump")
@@ -862,7 +932,7 @@ class Worker:
                         return result
 
                 # --- local verify ----------------------------------------
-                ok, output = self.run_verify(git, repo, session)
+                ok, output = self.run_verify(git, result.repo, session)
                 if not ok:
                     migrate_prompt = load_prompt(
                         "migrate",
@@ -871,8 +941,8 @@ class Worker:
                     )
                     mig = session.prompt(migrate_prompt)
                     self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
-                    ok, output = self.run_verify(git, repo, session)
-                if not ok and self.verify_command(repo):
+                    ok, output = self.run_verify(git, result.repo, session)
+                if not ok:
                     result.status = "failed"
                     result.detail = "local verification still failing after migration"
                     self.state.end_attempt(attempt_id, "failed", result.detail)
@@ -1672,6 +1742,41 @@ def _age_hours(created_at: str) -> float:
         return 0.0
 
 
+def _report_value(value: str) -> str:
+    value = value.strip()
+    return "" if value.lower() in ("none", "n/a", "-") else value
+
+
+def _recipe_command(setup: str, verify: str) -> str:
+    # Exports and working-directory changes must apply to verification too.
+    # bash -e stops on failed setup instead of letting a later check hide it.
+    parts = []
+    if setup:
+        parts.extend(
+            (
+                setup,
+                "sadoc_setup_status=$?",
+                'if [ "$sadoc_setup_status" -ne 0 ]; then exit "$sadoc_setup_status"; fi',
+            )
+        )
+    parts.append(verify)
+    return "bash -e -o pipefail -c " + shlex.quote("\n".join(parts))
+
+
+def _execute_recipe(session: PiSession, command: str) -> tuple[bool, str]:
+    response = session.bash(command, timeout=1800)
+    if not response.get("success"):
+        return False, "Shell RPC failed: " + str(response.get("error") or "no result")
+    data = response.get("data") or {}
+    code = data.get("exitCode")
+    output = str(data.get("output") or "")[-19000:]
+    if data.get("cancelled"):
+        return False, "Verification cancelled\n" + output
+    if code is None:
+        return False, "Verification returned no exit code\n" + output
+    return code == 0, f"exit {code}\n{output}"
+
+
 def _parse_report(report: str) -> dict[str, str]:
     """Parse the model's structured report (`KEY: value` lines).
 
@@ -1681,6 +1786,8 @@ def _parse_report(report: str) -> dict[str, str]:
     if not report:
         return fields
     for line in report.splitlines():
+        if line.strip().startswith("```"):
+            continue
         m = re.match(r"^\s*([A-Z][A-Z_]{2,}):\s*(.*)$", line)
         if m:
             fields[m.group(1)] = m.group(2).strip()
