@@ -254,23 +254,33 @@ is not diagnosed twice.
 
 ### Releases
 
-What a release means differs per repository, so Sadoc works it out from the
-repository itself:
+Sadoc uses publication history, workflow triggers, and publishing scripts to
+work out how a repository releases. A manifest or a build step alone is not
+evidence that anything is published.
 
-| Kind | How it is recognised |
+| Evidence | Suggested action |
 |---|---|
-| `crates.io` | a workflow that runs `cargo publish` |
-| `npm` | a workflow that runs `npm publish` |
-| `PyPI` | a workflow that runs `twine`, `uv publish` or `poetry publish` |
-| `github` | a workflow that creates a GitHub release |
-| `auto-deploy` | the project deploys from its default branch, so nothing to publish |
+| A workflow builds or publishes on `release` | Create/publish a GitHub release; let the workflow run its steps |
+| A publishing workflow runs on pushed tags | Create and push a tag matching its configured pattern |
+| A publishing workflow runs on `workflow_dispatch` | Run that workflow |
+| An npm script publishes a package | Run that script |
+| Publishing/deployment runs on the default branch | No manual release for that automated destination |
+| Previous GitHub releases or registry publications | Recognise that destination even without a publishing workflow |
 
-The published version is looked up in the registry, not just in the tags, because
-a crate can be on crates.io without ever having had a tag.
+Registry lookups use actual package names (excluding private packages), and each
+package is compared against its own published version. GitHub releases and tags
+are compared only when the repository has a single shared version. Tags alone
+do not imply GitHub releases; tag-triggered publishing needs a matching workflow.
+A documentation deployment does not suppress a library's separate release process.
 
-When the version in the manifest moves past what has been published, you are
-nudged - with what a release would mean for that repository. To say it
-explicitly, put it in the README:
+A version ahead of an established publication is a release candidate. Configured
+workflows with no publication history are described, but do **not** trigger a
+first-release nudge. Missing history is not proof of an overdue release. This
+check follows version history, not a predicted calendar schedule, and does not
+infer a release just because commits have accumulated.
+
+An explicit declaration opts into first-release nudges and overrides inference.
+Put an actual annotation in the README (outside code examples):
 
 ```html
 <!-- sadoc: release = npm, github -->

@@ -15,12 +15,6 @@ from dataclasses import dataclass
 from . import releases
 from .gh import Gh
 
-# The files worth reading to work out the release mechanism.
-_INTERESTING = re.compile(
-    r"^(Cargo\.toml|package\.json|pyproject\.toml|README\.md|readme\.md|"
-    r"VERSION|version\.txt|\.sadoc\.toml|sadoc\.toml)$"
-)
-
 
 @dataclass
 class ReleaseStatus:
@@ -87,7 +81,7 @@ def _read_files(gh: Gh, owner: str, repo: str, branch: str) -> dict[str, str]:
     # The crates of a Cargo workspace each carry their own version.
     for entry in tree:
         path = entry.get("path", "")
-        if not path.endswith("Cargo.toml") or path.count("/") > 2:
+        if not path.endswith(("Cargo.toml", "/package.json")) or path.count("/") > 2:
             continue
         try:
             files[path] = gh.file_text(owner, repo, path, ref=branch)
@@ -133,17 +127,21 @@ def _registry_version(package: str) -> str:
     from . import registry
 
     kind, _, name = package.partition(":")
+    if not name:
+        return ""
     try:
         if kind == "cargo":
             return registry.crates_io_latest(name) or ""
         if kind == "npm":
             return registry.npm_latest(name) or ""
+        if kind == "pypi":
+            return registry.pypi_latest(name) or ""
     except Exception:  # noqa: BLE001
         return ""
     return ""
 
 
-def _tag_versions(gh: Gh, owner: str, repo: str) -> list[str]:
+def _tag_versions(gh: Gh, owner: str, repo: str, *, include_tags: bool = True) -> list[str]:
     """The versions that have been tagged or released."""
 
     found: list[str] = []
@@ -152,12 +150,14 @@ def _tag_versions(gh: Gh, owner: str, repo: str) -> list[str]:
     except Exception:
         releases_list = []
     for release in releases_list:
-        if release.get("draft"):
+        if release.get("draft") or release.get("prerelease"):
             continue
         tag = release.get("tag_name") or ""
         version = _version_from_tag(tag)
         if version:
             found.append(version)
+    if not include_tags:
+        return found
     try:
         tags = gh.api_paginate(f"repos/{owner}/{repo}/tags", limit=50)
     except Exception:
@@ -173,7 +173,9 @@ def _version_from_tag(tag: str) -> str:
     """The version in a tag name, if the tag names one at all."""
     from . import semver
 
-    candidate = re.sub(r"^[vV]", "", tag.split("-")[0].split("+")[0])
+    candidate = re.sub(r"^[vV]", "", tag)
+    if "-" in candidate:
+        return ""
     if semver.parse(candidate) is None:
         return ""
     return candidate
@@ -189,20 +191,60 @@ def check(gh: Gh, owner: str, repo: str, branch: str) -> ReleaseStatus:
 
     status.packages = releases.project_versions(files)
     status.version = status.packages[0][1] if status.packages else ""
-    kinds, command, source = releases.detect_kinds(files)
+    github_versions = _tag_versions(gh, owner, repo, include_tags=False)
+    github_published = ""
+    for version in github_versions:
+        if _newer(version, github_published):
+            github_published = version
+    registry_history = {
+        name: _registry_version(name)
+        for name, _ in releases.project_versions(files, publishable_only=True)
+    }
+    registry_kinds = {"cargo": releases.CRATES, "npm": releases.NPM, "pypi": releases.PYPI}
+    published_kinds = [releases.GITHUB] if github_published else []
+    for name, published in registry_history.items():
+        kind = registry_kinds.get(name.partition(":")[0])
+        if published and kind and kind not in published_kinds:
+            published_kinds.append(kind)
+    kinds, command, source = releases.detect_kinds(
+        files, default_branch=branch, published_kinds=tuple(published_kinds)
+    )
     status.kinds = kinds
     status.command = command
     status.source = source
     status.kind = kinds[0] if kinds else releases.NONE
-    status.published = latest_published_version(gh, owner, repo, status.packages)
-    # A release is only owed if we know what releasing means here. A repository
-    # that deploys from its default branch owes nothing, and one with no
-    # release process at all is a question, not a debt.
-    releasable = [k for k in status.kinds if k not in (releases.AUTO, releases.NONE)]
-    status.due = bool(releasable) and any(
-        releases.release_due(version, status.published) for _, version in status.packages
+    releasable = [k for k in kinds if k not in (releases.AUTO, releases.NONE)]
+    # Different packages need their own baselines. A repository tag/release is
+    # only comparable to a single shared project version, not unrelated packages.
+    shared_version = len({version for _, version in status.packages}) == 1
+    repository_published = github_published if releases.GITHUB in kinds else ""
+    if "Create and push a tag" in command:
+        repository_published = latest_published_version(gh, owner, repo)
+    baselines = []
+    for name, version in status.packages:
+        kind = registry_kinds.get(name.partition(":")[0])
+        published = registry_history.get(name, "") if kind in kinds else ""
+        if published:
+            baselines.append((name, published))
+            status.due |= bool(releasable) and releases.release_due(version, published)
+        if shared_version and repository_published:
+            status.due |= bool(releasable) and releases.release_due(version, repository_published)
+        # First releases are opt-in. Workflow files alone are often templates or
+        # dormant automation and cannot demonstrate that a release is overdue.
+        if source == "annotation" and releasable and not published and not repository_published:
+            status.due |= releases.release_due(version, "")
+    if repository_published:
+        baselines.append(("repository", repository_published))
+    values = {version for _, version in baselines}
+    status.published = (
+        next(iter(values))
+        if len(values) == 1
+        else ", ".join(f"{name} {version}" for name, version in baselines)
     )
     status.note = releases.describe(status)
+    if releasable and not baselines and source != "annotation":
+        status.note += " No publication history was found; a first release is not overdue."
+
     return status
 
 
