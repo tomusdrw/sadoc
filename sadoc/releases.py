@@ -24,8 +24,11 @@ or in `.sadoc.toml`:
 
 from __future__ import annotations
 
+import json
 import re
+import tomllib
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from . import semver
@@ -44,7 +47,12 @@ ALL_KINDS = (CRATES, NPM, PYPI, GITHUB, AUTO, NONE)
 _PUBLISH_PATTERNS = (
     ("crates.io", re.compile(r"\bcargo\s+publish\b")),
     ("npm", re.compile(r"\bnpm\s+publish\b")),
-    ("PyPI", re.compile(r"\b(twine|uv\s+publish|poetry\s+publish|python\s+-m\s+build)\b")),
+    (
+        "PyPI",
+        re.compile(
+            r"\b(twine\s+upload|uv\s+publish|poetry\s+publish|pypa/gh-action-pypi-publish)\b"
+        ),
+    ),
     ("github", re.compile(r"\bgh\s+release\s+create\b|softprops/action-gh-release")),
 )
 
@@ -73,26 +81,56 @@ def read_annotations(repo_files: dict[str, str]) -> tuple[list[str], str]:
 
     Returns (kinds, command).
     """
-    for name in ("README.md", "readme.md", ".sadoc.toml", "sadoc.toml"):
-        text = repo_files.get(name)
-        if not text:
+    for name in (".sadoc.toml", "sadoc.toml"):
+        config = _toml(repo_files.get(name, "")).get("release", {})
+        if not isinstance(config, dict):
             continue
-        # <!-- sadoc: release = crates.io -->
+        kinds = _parse_kinds(str(config.get("kind", "")))
+        if kinds:
+            return kinds, str(config.get("command", ""))
+    for name in ("README.md", "readme.md"):
+        text = _without_markdown_code(repo_files.get(name, ""))
         for match in re.finditer(r"<!--\s*sadoc:\s*release\s*=\s*([^\n>]+?)-->", text, re.I):
             kinds = _parse_kinds(match.group(1))
             if kinds:
                 return kinds, ""
-        # [release] kind = "crates.io"  (in .sadoc.toml)
-        match = re.search(r"^\s*kind\s*=\s*[\"']([^\"']+)[\"']", text, re.M)
-        if match:
-            kinds = _parse_kinds(match.group(1))
-            command = ""
-            cmd = re.search(r"^\s*command\s*=\s*[\"']([^\"']+)[\"']", text, re.M)
-            if cmd:
-                command = cmd.group(1)
-            if kinds:
-                return kinds, command
     return [], ""
+
+
+def _toml(text: str) -> dict:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+
+
+def _json(text: str) -> dict:
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _without_markdown_code(text: str) -> str:
+    lines = []
+    fence = ""
+    for line in text.splitlines():
+        match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            if (
+                match
+                and match[1][0] == fence[0]
+                and len(match[1]) >= len(fence)
+                and not match[2].strip()
+            ):
+                fence = ""
+            continue
+        if match:
+            fence = match[1]
+        elif not line.startswith(("    ", "\t")):
+            lines.append(re.sub(r"(`+).*?\1", "", line))
+    return "\n".join(lines)
 
 
 def _parse_kinds(text: str) -> list[str]:
@@ -116,50 +154,53 @@ def _parse_kinds(text: str) -> list[str]:
     return out
 
 
-def project_versions(repo_files: dict[str, str]) -> list[tuple[str, str]]:
-    """The versions the project is currently at.
+def project_versions(
+    repo_files: dict[str, str], *, publishable_only: bool = False
+) -> list[tuple[str, str]]:
+    """Package identities and versions, read from their actual manifest sections.
 
-    A repository can publish more than one package - a Rust crate and an npm
-    package with different versions - so this returns one entry per package.
+    Private packages can have GitHub releases but must not be queried in public
+    registries. Cargo workspace-inherited versions use the workspace value.
     """
-    out: list[tuple[str, str]] = []
-    cargo = repo_files.get("Cargo.toml")
-    if cargo:
-        match = re.search(r"^\s*version\s*=\s*\"([^\"]+)\"", cargo, re.M)
-        if match:
-            out.append(("cargo", match.group(1)))
-    # The crates of a workspace each carry their own version.
+    out = []
+    workspace = _toml(repo_files.get("Cargo.toml", "")).get("workspace", {}).get("package", {})
     for path, text in repo_files.items():
-        if not path.endswith("Cargo.toml") or path == "Cargo.toml":
-            continue
-        match = re.search(r"^\s*version\s*=\s*\"([^\"]+)\"", text, re.M)
-        if not match:
-            continue
-        crate = re.search(r"^\s*name\s*=\s*\"([^\"]+)\"", text, re.M)
-        if crate:
-            crate_name = crate.group(1)
-        else:
-            crate_name = path.rsplit("/", 1)[0].rsplit("/", 1)[-1]
-        out.append((f"cargo:{crate_name}", match.group(1)))
-    package = repo_files.get("package.json")
-    if package:
-        import json
-
-        try:
-            version = str(json.loads(package).get("version", ""))
-        except (json.JSONDecodeError, TypeError):
-            version = ""
-        if version:
-            out.append(("npm", version))
-    pyproject = repo_files.get("pyproject.toml")
-    if pyproject:
-        match = re.search(r"^\s*version\s*=\s*\"([^\"]+)\"", pyproject, re.M)
-        if match:
-            out.append(("pypi", match.group(1)))
-    for name in ("VERSION", "version.txt"):
-        text = repo_files.get(name)
-        if text and text.strip():
-            out.append(("version", text.strip().splitlines()[0].strip()))
+        kind = ""
+        data = {}
+        private = False
+        if path == "Cargo.toml" or path.endswith("/Cargo.toml"):
+            kind = "cargo"
+            data = _toml(text).get("package", {})
+            data = {
+                key: workspace.get(key)
+                if isinstance(value, dict) and value.get("workspace")
+                else value
+                for key, value in data.items()
+            }
+            private = (
+                data.get("publish") is False
+                or isinstance(data.get("publish"), list)
+                and "crates-io" not in data["publish"]
+            )
+        elif path == "package.json" or path.endswith("/package.json"):
+            kind = "npm"
+            data = _json(text)
+            private = data.get("private") is True
+        elif path == "pyproject.toml":
+            kind = "pypi"
+            config = _toml(text)
+            data = config.get("project") or config.get("tool", {}).get("poetry", {})
+        version = data.get("version")
+        name = data.get("name")
+        if kind and isinstance(version, str) and version:
+            if publishable_only and (private or not name):
+                continue
+            out.append((f"{kind}:{name}" if name else kind, version))
+    if not publishable_only:
+        for name in ("VERSION", "version.txt"):
+            text = repo_files.get(name, "").strip()
+            if text:
+                out.append(("version", text.splitlines()[0].strip()))
     return out
 
 
@@ -169,36 +210,164 @@ def project_version(repo_files: dict[str, str]) -> str:
     return versions[0][1] if len(versions) == 1 else ""
 
 
-def detect_kinds(repo_files: dict[str, str]) -> tuple[list[str], str, str]:
-    """Work out how the repository releases.
+def _yaml_block(text: str, key: str) -> str:
+    """Read a simple YAML key's indented block; not a general YAML parser.
 
-    Returns (kinds, command, source).
+    Only the workflow's top-level `on` block is passed to event detection, so
+    step names, scripts, and comments cannot masquerade as event declarations.
     """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^( *)[\"']?" + re.escape(key) + r"[\"']?:\s*(.*)$", line)
+        if not match:
+            continue
+        indent = len(match[1])
+        body = [match[2].split(" #", 1)[0]]
+        for child in lines[index + 1 :]:
+            if child.strip() and not child.lstrip().startswith("#"):
+                if len(child) - len(child.lstrip()) <= indent:
+                    break
+                body.append(child)
+        return "\n".join(body)
+    # Flow-style trigger/filter maps, e.g. on: {push: {tags: ["v*"]}}.
+    match = re.search(r"[{,]\s*[\"']?" + re.escape(key) + r"[\"']?:\s*(\[[^\]]*\]|[^,}]+)", text)
+    return match[1] if match else ""
+
+
+def _event(on: str, name: str) -> bool:
+    """Look only at event keys, never nested filters or dispatch inputs."""
+    value = on.strip()
+    if value.startswith("{"):
+        tokens = re.findall(r"\"(?:\\.|[^\"])*\"|'(?:''|[^'])*'|[{}\[\],:]|[^\s{}\[\],:]+", value)
+        depth = 0
+        for index, token in enumerate(tokens):
+            if token in ("{", "["):
+                depth += 1
+            elif token in ("}", "]"):
+                depth -= 1
+            elif (
+                depth == 1 and token.strip("\"'") == name and tokens[index + 1 : index + 2] == [":"]
+            ):
+                return True
+        return False
+    if value.startswith("["):
+        return name in [item.strip().strip("\"'") for item in value.strip("[]").split(",")]
+    if ":" not in value:
+        return value.strip("\"'") == name
+    lines = [line for line in on.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    indent = min((len(line) - len(line.lstrip()) for line in lines), default=0)
+    return any(
+        re.match(r"^ {" + str(indent) + r"}[\"']?" + name + r"[\"']?:", line) for line in lines
+    )
+
+
+def _branch_matches(branch: str, filters: str, default: bool) -> bool:
+    matched = default
+    for pattern in re.findall(r"[\w*/!.-]+", filters):
+        negative = pattern.startswith("!")
+        if fnmatchcase(branch, pattern.lstrip("!")):
+            matched = not negative
+    return matched
+
+
+def _workflow_commands(text: str) -> str:
+    """Only executable steps/actions count as publishing evidence."""
+    commands = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^( *)(?:-\s+)?(?:run|uses):\s*(.*)$", line)
+        if not match:
+            continue
+        value = match[2]
+        if value.startswith(("|", ">")):
+            indent = len(match[1]) + (2 if line.lstrip().startswith("-") else 0)
+            for child in lines[index + 1 :]:
+                if child.strip() and len(child) - len(child.lstrip()) <= indent:
+                    break
+                if not child.lstrip().startswith("#"):
+                    commands.append(child)
+        else:
+            commands.append(value.split(" #", 1)[0])
+    return "\n".join(commands)
+
+
+def detect_kinds(
+    repo_files: dict[str, str],
+    default_branch: str = "main",
+    published_kinds: tuple[str, ...] = (),
+) -> tuple[list[str], str, str]:
+    """Infer destinations and the initiating action, keeping automation intact."""
     kinds, command = read_annotations(repo_files)
     if kinds:
         return kinds, command, "annotation"
 
-    workflows = {
-        name: text
-        for name, text in repo_files.items()
-        if name.startswith(".github/workflows/") and name.endswith((".yml", ".yaml"))
-    }
     found: list[str] = []
-    publishes_on_main = False
-    for _name, text in workflows.items():
-        for kind, pattern in _PUBLISH_PATTERNS:
-            if pattern.search(text) and kind not in found:
+    commands: list[str] = []
+    automatic = False
+    automatic_kinds: set[str] = set()
+    for name, text in repo_files.items():
+        if not name.startswith(".github/workflows/") or not name.endswith((".yml", ".yaml")):
+            continue
+        on = _yaml_block(text, "on")
+        steps = _workflow_commands(text)
+        publishes = [kind for kind, pattern in _PUBLISH_PATTERNS if pattern.search(steps)]
+        release_event = _event(on, "release")
+        tags = _yaml_block(on, "tags")
+        push = _event(on, "push")
+        branches = _yaml_block(on, "branches")
+        ignored = _yaml_block(on, "branches-ignore")
+        on_default = (
+            push
+            and not tags
+            and _branch_matches(default_branch, branches, default=not branches)
+            and not _branch_matches(default_branch, ignored, default=False)
+        )
+        if (
+            on_default
+            and not release_event
+            and "refs/tags/" not in text
+            and (publishes or _DEPLOY_PATTERNS.search(steps))
+        ):
+            automatic = True
+            automatic_kinds.update(publishes)
+            continue
+        if release_event and steps:
+            if GITHUB not in publishes:
+                publishes.append(GITHUB)
+            action = "gh release create"
+        elif push and tags and publishes:
+            action = "Create and push a tag matching " + " ".join(tags.split())
+        elif _event(on, "workflow_dispatch") and publishes:
+            action = f"gh workflow run {name.rsplit('/', 1)[-1]}"
+        else:
+            action = ""
+        for kind in publishes:
+            if kind not in found:
                 found.append(kind)
-        # A workflow that publishes or deploys straight from the default branch.
-        if _DEPLOY_PATTERNS.search(text) and re.search(r"^\s*(push|pull_request):", text, re.M):
-            publishes_on_main = True
-
-    if not found and publishes_on_main:
-        return [AUTO], "", "workflow"
+        if action and action not in commands:
+            commands.append(action)
+    source = "workflow" if found else "publication history"
+    for kind in published_kinds:
+        if kind not in found and kind not in automatic_kinds:
+            found.append(kind)
+    if found and source == "workflow":
+        return found, " or ".join(commands), source
+    scripts = _json(repo_files.get("package.json", "")).get("scripts", {})
+    if isinstance(scripts, dict):
+        for name, script in scripts.items():
+            if not isinstance(script, str):
+                continue
+            kinds = [
+                kind
+                for kind, pattern in _PUBLISH_PATTERNS
+                if kind not in automatic_kinds and pattern.search(script)
+            ]
+            if kinds:
+                return list(dict.fromkeys([*found, *kinds])), f"npm run {name}", "script"
     if found:
-        # A repository that publishes somewhere has a real release, even if it
-        # also deploys from the default branch.
-        return found, "", "workflow"
+        return found, "gh release create" if found == [GITHUB] else "", source
+    if automatic:
+        return [AUTO], "", "workflow"
     return [], "", ""
 
 
@@ -214,7 +383,7 @@ def release_due(version: str, published: str) -> bool:
     if current.major == 0 and current.minor == 0 and current.patch == 0:
         return False
     if latest is None:
-        return True
+        return not published
     return semver.compare(current, latest) > 0
 
 
@@ -222,14 +391,22 @@ def describe(info: ReleaseInfo) -> str:
     """A sentence about what a release would mean here."""
     if info.kind == AUTO:
         return (
-            "This repository deploys from the default branch, so there is nothing "
-            "to publish - the version bump is enough."
+            "Publishing/deployment is automated from the default branch; "
+            "no manual release action is needed."
         )
     if info.kind == NONE or not info.kinds:
         return (
             "No release process was found. If this project is published "
             "somewhere, say how in the README (for example "
             "`<!-- sadoc: release = npm -->`)."
+        )
+    if info.command:
+        return f"Release entry point: {info.command}."
+    if info.source != "annotation":
+        return (
+            "Release destinations: "
+            + ", ".join(info.kinds)
+            + ". No initiating command was identified."
         )
     commands = {
         CRATES: "cargo publish",
