@@ -64,10 +64,16 @@ CI_ONLY: <checks that require CI/production access and why, or NONE>
 INPUTS: <JSON array of additional tracked recipe files/directories, or []>
 NOTES: <what was verified, or the specific failure and what is needed>
 
-Use ready only when the local recipe actually passed. Use blocked when the local
-runtime or prerequisites prevent verification (explain why). Use baseline_failed
+Use ready when every check that can run locally has passed. Use blocked only when a
+check that *can* run locally cannot be run, or does not pass. Use baseline_failed
 when a check fails on unchanged project source after setup is complete. Never
 report VERIFY: NONE without an explicit status and a useful reason in NOTES.
+
+A check that cannot run locally - because it needs a browser, a system library
+or a service that needs root - is **not** a blocker: leave it out of VERIFY, list
+it under CI_ONLY with the reason and the files it covers, and report ready. CI
+runs those. VERIFY itself must pass on its own; if a check would fail locally
+because of the environment, it does not belong in VERIFY.
 
 VERIFY is run again later, against a tree whose dependencies have just changed,
 and against the files the build regenerates. So it must **build and test** the

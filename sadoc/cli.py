@@ -24,8 +24,8 @@ if __package__ in (None, ""):  # running as a script
 
 from sadoc import alerts as alerts_mod  # noqa: E402
 from sadoc import config as config_mod  # noqa: E402
-from sadoc.config import ModelSpec  # noqa: E402
 from sadoc import detect, ecosystems, pipeline, release_check  # noqa: E402
+from sadoc.config import ModelSpec  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from sadoc.state import State  # noqa: E402
