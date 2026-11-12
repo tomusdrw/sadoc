@@ -24,6 +24,7 @@ if __package__ in (None, ""):  # running as a script
 
 from sadoc import alerts as alerts_mod  # noqa: E402
 from sadoc import config as config_mod  # noqa: E402
+from sadoc.config import ModelSpec  # noqa: E402
 from sadoc import detect, ecosystems, pipeline, release_check  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
@@ -87,6 +88,39 @@ def _report_unsupported(worker, gh, owner: str, name: str, repo: str, state, arg
             persona=worker.persona,
         )
     )
+
+
+def _model_reachable(base_url: str) -> bool:
+    """Is the model endpoint answering?
+
+    A model that is not running makes every repository fail, and one email per
+    repository. It is much better to say so once.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = base_url.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    try:
+        with urllib.request.urlopen(f"{url}/models", timeout=10) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _check_models(cfg) -> bool:
+    """Every model the run might use must be reachable."""
+    seen: dict[str, ModelSpec] = {}
+    for task in ("bump", "migrate", "prepare", "fixci", "review"):
+        model = cfg.model_for(task)
+        seen[model.base_url] = model
+    for base_url, model in seen.items():
+        if not _model_reachable(base_url):
+            _log(f"the model {model.model} at {base_url} is not answering")
+            _log("start it, or point the config at one that is running")
+            return False
+    return True
 
 
 # ------------------------------------------------------------------- scan
@@ -198,6 +232,10 @@ def cmd_run(args, cfg, gh, state) -> int:
         candidates.append((priority, entry, groups))
     candidates.sort(key=lambda x: -x[0])
     _log(f"{len(candidates)} repos have outdated dependencies")
+
+    if not _check_models(cfg):
+        _log("not starting: the model is not answering")
+        return 1
 
     budget = args.max_prs if args.max_prs is not None else cfg.max_prs_per_night
     deadline = getattr(args, "deadline", None)

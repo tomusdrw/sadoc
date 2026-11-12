@@ -264,3 +264,10 @@ def test_a_dry_run_does_not_send_mail(tmp_path):
         assert state.notification_sent(alert.dedupe_key)
     finally:
         state.close()
+
+
+def test_a_dead_model_endpoint_is_detected():
+    """A model that is not running must be noticed before any work starts."""
+    from sadoc.cli import _model_reachable
+
+    assert _model_reachable("http://127.0.0.1:9/v1") is False
