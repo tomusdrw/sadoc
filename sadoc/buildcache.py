@@ -3,12 +3,28 @@
 Conventional build files are always watched, including newly added files. The
 agent supplies additional files/directories for unconventional project layouts.
 Missing declarations deliberately retain whole-tree invalidation.
+
+A fingerprint answers one question: *could the build recipe have changed?* A
+dependency version bump does not change how a project is built - it changes
+what is installed - so the versions are masked out before hashing. Without
+that, every pull request Sadoc opens would invalidate the recipe it just
+proved, and the next night would have to work out how to build the project all
+over again.
+
+Lockfiles are masked out entirely. A lockfile records what was resolved, not
+how to build, and it churns on every bump.
+
+Masking is never silent: the recipe is always replayed on the real tree
+before a pull request is opened, so a recipe that has gone stale fails loudly
+and is discarded rather than trusted.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+import tomllib
 from collections import deque
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
@@ -99,6 +115,159 @@ _PATTERNS = (
 )
 _DIRECTORIES = {".github", ".circleci", "scripts", "tools", "ci", "config", "configs", "gradle"}
 
+# A lockfile records what was resolved, not how to build. Its content changes
+# on every version bump, so it takes no part in the fingerprint. Its *presence*
+# still counts: adding or removing a lockfile changes the build.
+_LOCKFILES = {
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "cargo.lock",
+    "poetry.lock",
+    "uv.lock",
+    "gemfile.lock",
+    "composer.lock",
+    "pipfile.lock",
+    "go.sum",
+}
+
+# Manifest keys whose values are version constraints.
+_JSON_DEPENDENCY_KEYS = {
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+    "bundleDependencies",
+    "bundledDependencies",
+    "overrides",
+    "resolutions",
+    "require",
+    "require-dev",
+    "conflicts",
+    "replaces",
+    "provides",
+    "suggests",
+}
+
+# Manifest keys whose values are lists of requirement strings.
+_REQUIREMENT_LIST_KEYS = {
+    "dependencies",
+    "optional-dependencies",
+    "requires",
+    "dependency-groups",
+}
+
+# TOML tables whose values are dependency declarations.
+_TOML_DEPENDENCY_TABLES = {
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "optional-dependencies",
+    "dependency-groups",
+    "requires",
+}
+
+# A version constraint on a requirement line: `flask>=2.0`, `~> 7.0`, `==1.2`.
+_VERSION_SPEC = re.compile(r"(===|==|>=|<=|~=|!=|~>|<|>|\^|=)\s*v?\d[0-9A-Za-z.\-+*]*")
+
+# A bare version on a requirement line: `github.com/x/y v1.2.3`.
+_BARE_VERSION = re.compile(r"(?<![\w.])v\d+\.\d+[0-9A-Za-z.\-+*]*")
+
+# Files whose requirements are one per line.
+_LINE_FILES = {
+    "go.mod",
+    "go.work",
+    "gemfile",
+    "pipfile",
+}
+_LINE_PATTERNS = ("requirements*.txt", "requirements*.in", "constraints*.txt")
+
+
+def _requirement_name(requirement: str) -> str:
+    """The package name out of a requirement string, without its version."""
+    text = requirement.strip()
+    # PEP 508 and npm-style requirements, with extras and environment markers.
+    text = re.split(r"[;<\[(]", text, maxsplit=1)[0].strip()
+    text = re.split(r"[<>=!~^]", text, maxsplit=1)[0].strip()
+    return text
+
+
+def _mask_json(text: str) -> str | None:
+    """The manifest with its dependency versions replaced by the dependency names."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+
+    def walk(value, key=None):
+        if isinstance(value, dict):
+            if key in _JSON_DEPENDENCY_KEYS:
+                return {"__dependencies__": sorted(str(k) for k in value)}
+            return {k: walk(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            if key in _JSON_DEPENDENCY_KEYS or key in _REQUIREMENT_LIST_KEYS:
+                return sorted(_requirement_name(v) for v in value if isinstance(v, str))
+            return [walk(v) for v in value]
+        return value
+
+    return json.dumps(walk(data), sort_keys=True, separators=(",", ":"))
+
+
+def _mask_toml(text: str) -> str | None:
+    """The manifest with its dependency versions replaced by the dependency names."""
+    try:
+        data = tomllib.loads(text)
+    except (ValueError, tomllib.TOMLDecodeError):
+        return None
+
+    def walk(value, name=None):
+        if isinstance(value, dict):
+            if name in _TOML_DEPENDENCY_TABLES:
+                if isinstance(value, list):
+                    return sorted(_requirement_name(v) for v in value if isinstance(v, str))
+                return {"__dependencies__": sorted(str(k) for k in value)}
+            return {k: walk(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            if name in _REQUIREMENT_LIST_KEYS:
+                return sorted(_requirement_name(v) for v in value if isinstance(v, str))
+            return [walk(v) for v in value]
+        return value
+
+    return json.dumps(walk(data), sort_keys=True, separators=(",", ":"))
+
+
+def _mask_lines(text: str) -> str:
+    """Requirements one per line, with the versions taken out."""
+    masked = []
+    for line in text.splitlines():
+        line = _BARE_VERSION.sub("v*", line)
+        masked.append(_VERSION_SPEC.sub(r"\1*", line))
+    return "\n".join(masked)
+
+
+def _is_line_file(path: str) -> bool:
+    name = PurePosixPath(path).name.lower()
+    return name in _LINE_FILES or any(fnmatchcase(name, pat) for pat in _LINE_PATTERNS)
+
+
+def masked_content(path: str, text: str) -> str | None:
+    """The content of a manifest as the fingerprint should see it.
+
+    None means "this file is not a manifest we know how to mask", so its
+    content is hashed as it is.
+    """
+    name = PurePosixPath(path).name.lower()
+    if name.endswith(".json"):
+        return _mask_json(text)
+    if name.endswith(".toml"):
+        return _mask_toml(text)
+    if _is_line_file(path):
+        return _mask_lines(text)
+    return None
+
 
 def parse_inputs(value: str | None) -> list[str] | None:
     """Normalize a JSON list of relative files/directories; None means unknown."""
@@ -167,8 +336,37 @@ def _resolve_link(git: Git, entries: dict[str, str], path: str) -> tuple[str | N
     return "/".join(prefix) or ".", followed
 
 
+def _read_blob(git: Git, path: str) -> str | None:
+    """The content of a tracked file, or None if it cannot be read as text."""
+    try:
+        return git._run("show", f"HEAD:{path}")
+    except Exception:  # noqa: BLE001 - binary files and odd trees are not fatal
+        return None
+
+
+def _digest(path: str, metadata: str, text: str | None) -> str:
+    """What the fingerprint sees of one file.
+
+    A lockfile contributes only its presence. A manifest contributes its
+    content with the dependency versions taken out. Anything else contributes
+    its content as it is.
+    """
+    parts = metadata.split()
+    mode = parts[0] if parts else ""
+    kind = parts[1] if len(parts) > 1 else ""
+    sha = parts[2] if len(parts) > 2 else ""
+    name = PurePosixPath(path).name.lower()
+    if name in _LOCKFILES:
+        return f"{mode}:lock"
+    if kind == "blob" and text is not None:
+        masked = masked_content(path, text)
+        payload = masked if masked is not None else text
+        return f"{mode}:{hashlib.sha256(payload.encode()).hexdigest()}"
+    return f"{mode}:{sha}"
+
+
 def fingerprint(git: Git, inputs: list[str] | None, *, allow_network: bool) -> str:
-    """Hash tracked input paths, modes and object IDs, including additions/removals."""
+    """Hash the tracked input paths, modes and content, ignoring version churn."""
     if inputs is None:
         content = git.commit_sha("HEAD^{tree}")
     else:
@@ -212,10 +410,14 @@ def fingerprint(git: Git, inputs: list[str] | None, *, allow_network: bool) -> s
                     selected.add(candidate)
                     if entries[candidate].startswith("120000 "):
                         pending.append(candidate)
-        content = [(path, entries[path]) for path in sorted(selected)]
+        content = []
+        for path in sorted(selected):
+            metadata = entries[path]
+            text = _read_blob(git, path) if metadata.split()[1:2] == ["blob"] else None
+            content.append((path, _digest(path, metadata, text)))
     payload = json.dumps(
         {"inputs": inputs, "allow_network": allow_network, "content": content},
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "recipe-v2:" + hashlib.sha256(payload.encode()).hexdigest()
+    return "recipe-v3:" + hashlib.sha256(payload.encode()).hexdigest()

@@ -271,6 +271,15 @@ and additional files or directories identified during discovery. Added, deleted,
 renamed and edited inputs count, as do tracked symlink targets, submodule revisions
 and sandbox network-policy changes. Ordinary checks still run before opening a PR.
 
+A dependency *version* is not a change to the build, so it does not throw the
+recipe away: the fingerprint masks versions out, and a lockfile's content is
+ignored entirely - only whether it is there counts. A new or removed dependency,
+a changed script, a changed toolchain pin, a changed CI workflow and any change
+to the files the agent declared still force a fresh look. The recipe is always
+replayed on the real tree before a pull request is opened, so a recipe that has
+gone stale fails loudly instead of passing quietly - and a cached recipe that
+fails is thrown away rather than trusted again.
+
 Discovery reports without an input list conservatively track the whole Git tree.
 An explicit empty list means the conventional inputs are sufficient; custom
 layouts can name files or entire directories. Failures are tried once per complete

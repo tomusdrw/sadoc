@@ -310,6 +310,20 @@ class State:
         return row["ci_attempts"] if row else 0
 
     # ------------------------------------------------------- repo setup
+    def invalidate_setup(self, repo: str, notes: str = "") -> None:
+        """Throw away a recipe that no longer works.
+
+        A recipe that fails on the tree it is replayed against is not a
+        recipe any more. It is marked stale so the next run works it out
+        again, rather than failing the same way for ever.
+        """
+        now = time.time()
+        with self.tx() as c:
+            c.execute(
+                "UPDATE repo_setup SET status='stale', updated_at=?, notes=? WHERE repo=?",
+                (now, (notes or "the recipe no longer works on this tree")[:2000], repo),
+            )
+
     def record_setup(
         self,
         repo: str,

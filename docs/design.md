@@ -270,12 +270,31 @@ settled final result rather than rejecting the first failed attempt. Truncation,
 empty replies and timeouts must remain actionable errors, not `VERIFY: NONE`.
 
 `repo_setup` stores recipes under `owner/repository`. `buildcache.py` computes a
-`recipe-v2` fingerprint from committed input paths, file modes and Git object IDs,
-plus the sandbox network policy. It always includes conventional manifests,
+`recipe-v3` fingerprint from committed input paths, file modes and content, plus
+the sandbox network policy. It always includes conventional manifests,
 lockfiles, toolchain/hidden configuration, CI, README/contributor documentation,
 shell scripts, and scripts/tools/config directories. Enumerating the current tree
 also detects new matching files, deletions, renames and changed submodule pointers.
 Tracked symlink targets are resolved through Git, never through the host filesystem.
+
+The fingerprint answers one question: *could the build recipe have changed?* A
+dependency **version** does not change how a project is built - it changes what
+is installed - so the versions are masked out before hashing. A lockfile records
+what was resolved, not how to build, so its content is masked out entirely and
+only its presence counts. Without this, every pull request Sadoc opens would
+invalidate the recipe it had just proved, and the next night would have to work
+out how to build the project from scratch: 52 minutes for `website-creator`, and
+nothing else that night.
+
+What still invalidates a recipe: a new or removed dependency, a changed script,
+a changed toolchain pin (`engines`, the Go directive, a workflow's
+`node-version`), a changed CI workflow, a new or removed lockfile, and any
+change to the files the agent declared in `INPUTS`.
+
+Masking is never silent. The recipe is always replayed on the real tree before
+a pull request is opened, so a recipe that has gone stale fails loudly. A
+cached recipe that fails is marked `stale` and thrown away, so a repository
+cannot fail the same way for ever.
 
 The discovery report's `INPUTS` field supplements these defaults with a JSON array
 of literal relative files/directories for custom scripts and their helpers. The

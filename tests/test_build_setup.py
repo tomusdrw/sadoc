@@ -88,6 +88,33 @@ def test_setup_is_saved_and_replayed_in_the_verification_shell(project):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
+def test_a_recipe_that_stops_working_is_thrown_away(project):
+    """A cached recipe that fails must not be trusted for ever."""
+    worker, git, session = project
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    assert worker.state.setup("alice/repo")["status"] == "ok"
+
+    # A later run replays the cached recipe, and it fails.
+    next_run = Worker(worker.cfg, worker.gh, worker.state)
+    next_run._invalidate_recipe("alice", "repo", "exit 1\nthe build is broken")
+    assert worker.state.setup("alice/repo")["status"] == "stale"
+    assert worker.verify_command("alice/repo") is None
+
+    # The next run works it out again rather than failing the same way.
+    third = Worker(worker.cfg, worker.gh, worker.state)
+    assert third.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
+    assert len(session.prompts) == 2
+
+
+def test_a_recipe_worked_out_this_run_is_not_thrown_away(project):
+    """A recipe that was just discovered has already recorded its failure."""
+    worker, git, session = project
+    session.report = REPORT.replace("export BUILD_MARKER=ready", "export BUILD_MARKER=wrong")
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    worker._invalidate_recipe("alice", "repo", "exit 1")
+    assert worker.state.setup("alice/repo")["status"] != "stale"
+
+
 def test_generated_artifacts_cannot_make_an_incomplete_recipe_pass(project):
     worker, git, session = project
     session.report = REPORT.replace(
@@ -413,7 +440,6 @@ def test_cache_survives_unrelated_source_test_and_doc_changes(project):
     "path",
     [
         "package.json",
-        "pnpm-lock.yaml",
         "packages/backend/pyproject.toml",
         ".github/workflows/ci.yml",
         ".tool-versions",
@@ -443,6 +469,39 @@ def test_build_config_changes_refresh_cached_recipe(project, path, change):
     commit_build_inputs(git)
     assert worker.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
     assert len(session.prompts) == 2
+
+
+@pytest.mark.parametrize("change", ["add", "delete"])
+def test_a_lockfile_appearing_or_going_refreshes_cached_recipe(project, change):
+    """A lockfile records what was resolved, so its content is not the recipe."""
+    worker, git, session = project
+    session.report = REPORT + "\nINPUTS: []"
+    file = git.path / "pnpm-lock.yaml"
+    if change == "delete":
+        file.write_text("lockfileVersion: '9.0'\n")
+        commit_build_inputs(git)
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    if change == "delete":
+        file.unlink()
+    else:
+        file.write_text("lockfileVersion: '9.0'\n")
+    commit_build_inputs(git)
+    assert worker.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
+    assert len(session.prompts) == 2
+
+
+def test_a_lockfile_changing_content_keeps_the_cached_recipe(project):
+    """Resolving different versions does not change how the project is built."""
+    worker, git, session = project
+    session.report = REPORT + "\nINPUTS: []"
+    file = git.path / "pnpm-lock.yaml"
+    file.write_text("lockfileVersion: '9.0'\n")
+    commit_build_inputs(git)
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    file.write_text("lockfileVersion: '9.0'\npackages:\n  react@19.0.0: {}\n")
+    commit_build_inputs(git)
+    assert worker.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
+    assert len(session.prompts) == 1
 
 
 def test_custom_build_inputs_and_new_files_in_watched_directories_refresh(project):

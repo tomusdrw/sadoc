@@ -206,6 +206,8 @@ class Worker:
         self.persona = persona.load(getattr(cfg, "persona", None))
         self.adv_cache = advisories.AdvisoryCache(gh)
         self._setup_attempts: dict[tuple[str, str], dict] = {}
+        # The repositories whose recipe was worked out during this run.
+        self._discovered_repos: set[str] = set()
 
     def _notify_secret_names(self) -> list[str]:
         """Environment variables that hold notification secrets."""
@@ -310,6 +312,23 @@ class Worker:
             return _recipe_command(row["setup_command"], row["verify_command"])
         return None
 
+    def _invalidate_recipe(self, owner: str, repo: str, output: str) -> None:
+        """Discard a recipe that failed on the tree it was replayed against.
+
+        Only a recipe that was *cached* is discarded. One that was worked out
+        during this run has just been recorded, with its failure, and there
+        is nothing stale about it.
+        """
+        key = f"{owner}/{repo}"
+        if key in self._discovered_repos:
+            return
+        try:
+            self.state.invalidate_setup(
+                key, notes="the recipe failed on this tree: " + output[-800:]
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail a run over bookkeeping
+            self._safe_log(f"could not mark the recipe stale: {exc}", repo=key)
+
     def ensure_build_setup(self, owner: str, repo: str, branch: str, git: Git) -> dict:
         """Reuse recipes while their build inputs and sandbox policy are unchanged."""
         key = f"{owner}/{repo}"
@@ -338,6 +357,7 @@ class Worker:
         )
         self.state.record_setup(key, **result)
         self._setup_attempts[attempt_key] = result
+        self._discovered_repos.add(key)
         return result
 
     def discover_verify_command(
@@ -954,6 +974,9 @@ class Worker:
                     self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
                     ok, output = self.run_verify(git, result.repo, session)
                 if not ok:
+                    # A recipe that no longer works must not be trusted again:
+                    # mark it stale so the next run works it out afresh.
+                    self._invalidate_recipe(owner, repo, output)
                     result.status = "failed"
                     result.detail = "local verification still failing after migration"
                     self.state.end_attempt(attempt_id, "failed", result.detail)
