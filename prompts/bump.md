@@ -41,7 +41,12 @@ reformat, refactor, or "improve" anything that is not part of these updates.
    - `poetry.lock` / `uv.lock` -> `poetry lock` / `uv lock`
    - `go.sum` -> `go mod tidy`
    Only regenerate the lockfile if the project actually has one committed.
-8. If a tool needed for step 7 is not installed, skip that lockfile and say so in
+8. Regenerate any other **derived artifact** the build produces - generated code,
+   compiled bundles, snapshots - so the repository stays consistent with the new
+   dependency versions. If the project's build writes such files, run the same
+   step the build runs, and leave the regenerated files in the working tree: they
+   are part of the change. Do not commit anything yourself.
+9. If a tool needed for step 7 is not installed, skip that lockfile and say so in
    your summary rather than failing.
 
 ## Constraints

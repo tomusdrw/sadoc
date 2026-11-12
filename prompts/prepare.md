@@ -69,6 +69,15 @@ runtime or prerequisites prevent verification (explain why). Use baseline_failed
 when a check fails on unchanged project source after setup is complete. Never
 report VERIFY: NONE without an explicit status and a useful reason in NOTES.
 
+VERIFY is run again later, against a tree whose dependencies have just changed,
+and against the files the build regenerates. So it must **build and test** the
+project. It must not contain a step that asserts the working tree is unmodified,
+or that generated files still match the committed copies - for example
+`git diff --quiet`, `git status --porcelain` being empty, or a check that
+generated bundles are up to date. Those pass on an untouched checkout and fail the
+moment a dependency legitimately changes what is generated. Put the steps that
+produce those files in SETUP, and leave it at that.
+
 PREREQUISITES is only for requirements that could **not** be met inside the
 sandbox - a missing system library, a service you cannot start. If the tools the
 build needs were already available, or you installed them, that belongs in SETUP
