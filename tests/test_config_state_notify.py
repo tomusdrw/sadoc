@@ -241,3 +241,26 @@ def test_pr_merge_uses_a_strategy_flag():
     gh.pr_merge("o", "r", 1)
     assert "--squash" in recorded["args"]
     assert "--merge-method" not in recorded["args"]
+
+
+def test_a_dry_run_does_not_send_mail(tmp_path):
+    """A test run must not email anyone."""
+    from sadoc.notify import Notifier
+
+    sent = []
+
+    class RecordingBackend(notify.Backend):
+        def send(self, message):
+            sent.append(message)
+            return "sent"
+
+    state = state_mod.State(tmp_path / "state.db")
+    try:
+        notifier = Notifier(RecordingBackend(), state=state, dry_run=True, to=["a@b.c"])
+        alert = alerts.pr_opened("owner/repo", 1, "http://x", "A", 1, [])
+        assert notifier.send(alert) == "dry-run"
+        assert sent == []
+        # The alert is still recorded, so a later real run can send it.
+        assert state.notification_sent(alert.dedupe_key)
+    finally:
+        state.close()

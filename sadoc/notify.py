@@ -248,7 +248,7 @@ class Notifier:
         self.from_addr = from_addr
 
     def send(self, alert, force: bool = False) -> str:
-        """Send an alert. Returns 'sent', 'duplicate' or 'failed'."""
+        """Send an alert. Returns 'sent', 'duplicate', 'dry-run' or 'failed'."""
         if (
             self.state is not None
             and alert.dedupe_key
@@ -256,6 +256,20 @@ class Notifier:
             and self.state.notification_sent(alert.dedupe_key)
         ):
             return "duplicate"
+        if self.dry_run:
+            # A test run must not send mail. The alert is still recorded, so a
+            # later real run can still send it.
+            if self.state is not None and alert.dedupe_key:
+                self.state.record_notification(
+                    alert.dedupe_key,
+                    alert.repo,
+                    alert.pr_number,
+                    alert.kind,
+                    alert.subject,
+                    "dry-run",
+                    ok=False,
+                )
+            return "dry-run"
         html_body = getattr(alert, "html", None)
         inline_images = []
         if html_body and f"cid:{LOGO_CID}" in html_body:
