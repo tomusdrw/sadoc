@@ -171,7 +171,12 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
     result = subprocess.run(
         [bun, "run", "run.ts"],
         cwd=tmp_path,
-        env={**os.environ, "SADOC_CONTAINER_POLICY": policy.policy_json()},
+        env={
+            **os.environ,
+            "SADOC_CONTAINER_POLICY": policy.policy_json(),
+            "SADOC_WORKSPACE": str(tmp_path),
+            "SADOC_CACHE_DIR": str(tmp_path / "cache"),
+        },
         capture_output=True,
         text=True,
         timeout=120,

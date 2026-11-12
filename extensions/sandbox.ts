@@ -99,6 +99,43 @@ function q(s: string): string {
 }
 
 /**
+ * A mount whose source is outside the workspace and the cache.
+ *
+ * A container may have the repository and the tool cache, and nothing else.
+ * A source that is relative, or that the shell expands, is inside the sandbox
+ * already; a source that names a host directory is not.
+ */
+function mountSourceViolation(command: string): string | null {
+	const roots = [WORKSPACE, TOOL_CACHE];
+	const patterns = [
+		/(?:-v|--volume)[= ]+("[^"]*"|'[^']*'|[^\s:]+)/g,
+		/--mount[= ][^\n]*?\bsource=("[^"]*"|'[^']*'|[^\s,]+)/g,
+	];
+	for (const pattern of patterns) {
+		for (const match of command.matchAll(pattern)) {
+			let source = (match[1] ?? "").replace(/^["']|["']$/g, "");
+			if (!source) {
+				continue;
+			}
+			// Expanded by the shell inside the sandbox: the scratch home, the
+			// working directory, a variable the recipe sets itself.
+			if (source.startsWith("$") || source.startsWith("~")) {
+				continue;
+			}
+			// Relative to the working directory, which is the workspace.
+			if (!source.startsWith("/")) {
+				continue;
+			}
+			if (roots.some((root) => source === root || source.startsWith(root + "/"))) {
+				continue;
+			}
+			return "a directory outside the workspace";
+		}
+	}
+	return null;
+}
+
+/**
  * The reason a command is not allowed, or null if it is fine.
  *
  * `allowedRuntime` is the one container runtime that may be used, if any.
@@ -128,6 +165,10 @@ export function policyReason(command: string, allowedRuntime: string | null): st
 			if (pattern.test(command)) {
 				return label;
 			}
+		}
+		const outside = mountSourceViolation(command);
+		if (outside) {
+			return outside;
 		}
 	}
 	return null;

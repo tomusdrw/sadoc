@@ -10,6 +10,8 @@
  */
 import { policyReason } from "./sandbox.ts";
 
+const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
+
 // [command, allowedRuntime, shouldBlock]
 const cases: Array<[string, string | null, boolean]> = [
 	// The allowed runtime, used properly.
@@ -38,6 +40,13 @@ const cases: Array<[string, string | null, boolean]> = [
 	["docker run alpine", "docker", true],
 	// With containers off, the runtime itself is refused.
 	["podman run alpine", null, true],
+	// A container may have the workspace and the cache, and nothing else.
+	["podman run -v .:/w -w /w node:22 npm test", "podman", false],
+	['podman run -v "$PWD:/w" -w /w node:22 npm test', "podman", false],
+	["podman run -v /etc:/etc alpine", "podman", true],
+	["podman run -v /home/someone/.ssh:/keys alpine", "podman", true],
+	["podman run --mount type=bind,source=/etc,target=/etc alpine", "podman", true],
+	[`podman run --mount type=bind,source=${WORKSPACE}/sub,target=/w alpine`, "podman", false],
 	// The shell rules still hold.
 	["git push origin main", "podman", true],
 	["gh pr create --title x", "podman", true],
