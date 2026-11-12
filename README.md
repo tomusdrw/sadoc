@@ -145,8 +145,20 @@ sadoc doctor                  # is the default branch green? fix it if not
 sadoc monitor                 # chase CI and review feedback
 sadoc remind                  # email about unattended pull requests
 sadoc releases                # which repositories owe a release
+sadoc selfupdate              # update Sadoc from the latest main branch
 sadoc status                  # queue and pull request state
 ```
+
+### Updating itself
+
+Sadoc runs from a git checkout, and updates itself from the latest `main` before
+each nightly run. The pull is **fast-forward only** and the working tree must be
+clean, so local changes are never thrown away and a divergent history is refused
+rather than merged. If the update cannot happen, the run carries on with the
+current version.
+
+If something new was fetched, the runner starts again, so the code that runs is
+the code that was just fetched. Set `SADOC_SELF_UPDATE=0` to turn it off.
 
 ### Nightly
 

@@ -52,6 +52,10 @@ notice when something is wrong in the sky.
 - **Unsupported ecosystems are reported.** A repository built with Zig, Elixir,
   Gradle or any of two dozen other languages is now said out loud, by email,
   rather than passed over in silence.
+- **Self-update.** Sadoc pulls the latest `main` before each nightly run. The
+  pull is fast-forward only and refuses to touch a dirty working tree. If
+  something new was fetched, the runner starts again so the new code is what
+  runs.
 - **A voice.** Emails and GitHub comments are signed and written in Sadoc's voice;
   pull request descriptions carry a single closing line and nothing else.
 - **GitHub Actions and the runtimes inside them.** The actions a workflow uses are
@@ -67,6 +71,10 @@ notice when something is wrong in the sky.
 - **Unsupported ecosystems are reported.** A repository built with Zig, Elixir,
   Gradle or any of two dozen other languages is now said out loud, by email,
   rather than passed over in silence.
+- **Self-update.** Sadoc pulls the latest `main` before each nightly run. The
+  pull is fast-forward only and refuses to touch a dirty working tree. If
+  something new was fetched, the runner starts again so the new code is what
+  runs.
 
 ### Notes
 
