@@ -67,6 +67,23 @@ docs/design.md     why things are the way they are
 8. **Tests are the contract.** `pytest` must pass on every supported Python
    version. `ruff check .` must be clean.
 
+9. **Push before you report that you are done.** A change that exists only in
+   the working tree is lost to the next `git pull` — and Sadoc pulls from
+   `origin/main` every night. Before finishing:
+
+   ```bash
+   git add -A
+   git commit -m "..."
+   git push
+   git status -sb     # must say "## main...origin/main" with no divergence
+   ```
+
+   If the push is rejected because someone else pushed first, `git fetch` and
+   rebase onto `origin/main`, then push again — do not force-push over
+   someone else's work. Confirm the push landed by checking that `HEAD` and
+   `origin/main` are the same commit; a push that reports success but leaves
+   the branch diverged is not done.
+
 ## Working on the code
 
 ```bash
