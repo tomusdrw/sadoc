@@ -365,8 +365,20 @@ def _digest(path: str, metadata: str, text: str | None) -> str:
     return f"{mode}:{sha}"
 
 
-def fingerprint(git: Git, inputs: list[str] | None, *, allow_network: bool) -> str:
-    """Hash the tracked input paths, modes and content, ignoring version churn."""
+def fingerprint(
+    git: Git,
+    inputs: list[str] | None,
+    *,
+    allow_network: bool,
+    allow_containers: bool = False,
+    container_runtime: str = "",
+) -> str:
+    """Hash the tracked input paths, modes and content, ignoring version churn.
+
+    The sandbox policy is part of the fingerprint: a different network policy
+    or a different container runtime is a different environment, and the
+    recipe may well be different.
+    """
     if inputs is None:
         content = git.commit_sha("HEAD^{tree}")
     else:
@@ -416,7 +428,13 @@ def fingerprint(git: Git, inputs: list[str] | None, *, allow_network: bool) -> s
             text = _read_blob(git, path) if metadata.split()[1:2] == ["blob"] else None
             content.append((path, _digest(path, metadata, text)))
     payload = json.dumps(
-        {"inputs": inputs, "allow_network": allow_network, "content": content},
+        {
+            "inputs": inputs,
+            "allow_network": allow_network,
+            "allow_containers": allow_containers,
+            "container_runtime": container_runtime,
+            "content": content,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )

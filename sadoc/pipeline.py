@@ -339,21 +339,40 @@ class Worker:
         if row and row["status"] == "ok" and row["verify_command"]:
             try:
                 inputs = buildcache.parse_inputs(row["build_inputs"] or None)
-                expected = buildcache.fingerprint(git, inputs, allow_network=self.cfg.allow_network)
+                expected = buildcache.fingerprint(
+                    git,
+                    inputs,
+                    allow_network=self.cfg.allow_network,
+                    allow_containers=self.cfg.allow_containers,
+                    container_runtime=self.cfg.container_runtime,
+                )
             except ValueError:
                 expected = ""  # Corrupt declarations must be rediscovered, not trusted.
             if expected and row["fingerprint"] == expected:
                 return dict(row)
         # Failures remain scoped to the entire revision within this run. A source
         # fix may repair a baseline failure without changing the build recipe.
-        attempt_key = (key, buildcache.fingerprint(git, None, allow_network=self.cfg.allow_network))
+        attempt_key = (
+            key,
+            buildcache.fingerprint(
+                git,
+                None,
+                allow_network=self.cfg.allow_network,
+                allow_containers=self.cfg.allow_containers,
+                container_runtime=self.cfg.container_runtime,
+            ),
+        )
         if attempt_key in self._setup_attempts:
             return self._setup_attempts[attempt_key]
         self._safe_log("working out how to build this project", repo=key)
         result = self.discover_verify_command(owner, repo, branch, git=git)
         inputs = buildcache.parse_inputs(result["build_inputs"] or None)
         result["fingerprint"] = buildcache.fingerprint(
-            git, inputs, allow_network=self.cfg.allow_network
+            git,
+            inputs,
+            allow_network=self.cfg.allow_network,
+            allow_containers=self.cfg.allow_containers,
+            container_runtime=self.cfg.container_runtime,
         )
         self.state.record_setup(key, **result)
         self._setup_attempts[attempt_key] = result
