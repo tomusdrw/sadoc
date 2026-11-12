@@ -549,3 +549,35 @@ def test_unresolvable_symlinks_use_conservative_cache_invalidation(project, targ
     commit_build_inputs(git)
     worker.ensure_build_setup("alice", "repo", "main", git)
     assert len(session.prompts) == 2
+
+
+def test_a_working_recipe_is_not_blocked_by_listed_toolchain(project):
+    """A model may list what the build needs and still have a working recipe.
+
+    PREREQUISITES is for requirements the sandbox could not meet. Treating any
+    non-empty field as blocking threw away recipes that had been verified.
+    """
+    worker, git, session = project
+    session.report = (
+        "STATUS: ready\n"
+        "SETUP: export BUILD_MARKER=ready\n"
+        "VERIFY: printf should-not-run\n"
+        "PREREQUISITES: Go 1.26.0 and Bun, both already installed in the sandbox\n"
+        "NOTES: verified\n"
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok"
+    assert worker.verify_command("alice/repo") is not None
+
+
+def test_unmet_prerequisites_still_block_when_the_status_is_not_ready(project):
+    worker, git, session = project
+    session.report = (
+        "STATUS: blocked\n"
+        "VERIFY: printf should-not-run\n"
+        "PREREQUISITES: libfoo-dev is missing and cannot be installed\n"
+        "NOTES: cannot verify\n"
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "blocked"
+    assert worker.verify_command("alice/repo") is None

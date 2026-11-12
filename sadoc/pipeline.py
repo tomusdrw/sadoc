@@ -401,7 +401,12 @@ class Worker:
                     "Discovery did not return a usable VERIFY recipe. " + turn.text[:1500]
                 )
                 return result
-            if result["prerequisites"]:
+            # PREREQUISITES is for requirements the sandbox could not meet. A
+            # model often lists what the build simply needs as well, so a
+            # non-empty field is only taken as blocking when the model did not
+            # claim the recipe is ready - and the replay below is the real
+            # authority either way.
+            if result["prerequisites"] and status != "ready":
                 result["status"] = "blocked"
                 result["notes"] = (
                     result["notes"] or "Local verification needs additional prerequisites"

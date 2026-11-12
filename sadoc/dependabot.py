@@ -67,7 +67,11 @@ def disable_version_updates(text: str) -> tuple[str, int]:
 
 
 def _file_info(gh, owner: str, repo: str, path: str) -> dict | None:
-    data = gh.api(f"repos/{owner}/{repo}/contents/{path}")
+    """A file's contents, or None if it is not there."""
+    try:
+        data = gh.api(f"repos/{owner}/{repo}/contents/{path}")
+    except Exception:  # noqa: BLE001 - a missing file is not an error
+        return None
     return data if isinstance(data, dict) and "content" in data else None
 
 

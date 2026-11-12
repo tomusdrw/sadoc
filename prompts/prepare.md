@@ -68,3 +68,9 @@ Use ready only when the local recipe actually passed. Use blocked when the local
 runtime or prerequisites prevent verification (explain why). Use baseline_failed
 when a check fails on unchanged project source after setup is complete. Never
 report VERIFY: NONE without an explicit status and a useful reason in NOTES.
+
+PREREQUISITES is only for requirements that could **not** be met inside the
+sandbox - a missing system library, a service you cannot start. If the tools the
+build needs were already available, or you installed them, that belongs in SETUP
+and in NOTES. Write NONE when nothing is missing; listing the toolchain the
+project happens to require marks a working recipe as blocked.
