@@ -91,6 +91,26 @@ def test_successful_retry_can_recover_provider_error(tmp_path):
     assert session.prompt("discover").text == "VERIFY: make check"
 
 
+def test_report_only_prompt_uses_the_extension_marker(tmp_path):
+    import json
+
+    session = session_with_events(
+        tmp_path,
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "STATUS: blocked"}],
+            },
+        },
+        {"type": "agent_settled"},
+    )
+    assert session.prompt("Reformat", timeout=120, report_only=True).text == "STATUS: blocked"
+    payload = json.loads(session._proc.stdin.write.call_args.args[0])
+    assert payload["message"] == "[SADOC_REPORT_ONLY]\nReformat"
+
+
 def test_rpc_bash_uses_the_sandbox_and_scrubs_credentials(tmp_path, monkeypatch):
     import shutil
 

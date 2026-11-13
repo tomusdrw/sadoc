@@ -123,31 +123,56 @@ function q(s: string): string {
  * A source that is relative, or that the shell expands, is inside the sandbox
  * already; a source that names a host directory is not.
  */
-function mountSourceViolation(command: string, roots: string[] = [WORKSPACE, TOOL_CACHE]): string | null {
-	const patterns = [
-		/(?:-v|--volume)[= ]+("[^"]*"|'[^']*'|[^\s:]+)/g,
-		/--mount[= ][^\n]*?\bsource=("[^"]*"|'[^']*'|[^\s,]+)/g,
-	];
-	for (const pattern of patterns) {
-		for (const match of command.matchAll(pattern)) {
-			let source = (match[1] ?? "").replace(/^["']|["']$/g, "");
-			if (!source) {
-				continue;
+function mountSourceViolation(command: string | string[], roots: string[] = [WORKSPACE, TOOL_CACHE]): string | null {
+	const sources: string[] = [];
+	if (Array.isArray(command)) {
+		// The shim already supplies expanded argv. Joining it loses spaces and
+		// literal quotes in paths; these are data here, not shell delimiters.
+		for (let i = 0; i < command.length; i++) {
+			const arg = command[i];
+			let volume: string | undefined;
+			let mount: string | undefined;
+			if (arg === "-v" || arg === "--volume") volume = command[++i];
+			else if (arg.startsWith("--volume=")) volume = arg.slice(9);
+			else if (arg.startsWith("-v") && arg.length > 2) volume = arg.slice(2);
+			else if (arg === "--mount") mount = command[++i];
+			else if (arg.startsWith("--mount=")) mount = arg.slice(8);
+			if (volume) sources.push(volume.split(":")[0]);
+			if (mount) {
+				for (const field of mount.split(",")) {
+					const match = /^(?:source|src)=(.*)$/.exec(field);
+					if (match) sources.push(match[1]);
+				}
 			}
-			// Expanded by the shell inside the sandbox: the scratch home, the
-			// working directory, a variable the recipe sets itself.
-			if (source.startsWith("$") || source.startsWith("~")) {
-				continue;
-			}
-			// Relative to the working directory, which is the workspace.
-			if (!source.startsWith("/")) {
-				continue;
-			}
-			if (roots.some((root) => source === root || source.startsWith(root + "/"))) {
-				continue;
-			}
-			return "a directory outside the workspace";
 		}
+	} else {
+		const patterns = [
+			/(?:-v|--volume)[= ]+("[^"]*"|'[^']*'|[^\s:]+)/g,
+			/--mount[= ][^\n]*?\bsource=("[^"]*"|'[^']*'|[^\s,]+)/g,
+		];
+		for (const pattern of patterns) {
+			for (const match of command.matchAll(pattern)) {
+				sources.push((match[1] ?? "").replace(/^["']|["']$/g, "").split(":")[0]);
+			}
+		}
+	}
+	for (const source of sources) {
+		if (!source) {
+			continue;
+		}
+		// Expanded by the shell inside the sandbox: the scratch home, the
+		// working directory, a variable the recipe sets itself.
+		if (source.startsWith("$") || source.startsWith("~")) {
+			continue;
+		}
+		// Relative to the working directory, which is the workspace.
+		if (!source.startsWith("/")) {
+			continue;
+		}
+		if (roots.some((root) => source === root || source.startsWith(root + "/"))) {
+			continue;
+		}
+		return "a directory outside the workspace";
 	}
 	return null;
 }
@@ -208,9 +233,10 @@ if __name__ == "__main__":
 `;
 
 /** The reason a runtime invocation is not allowed, or null if it is fine. */
-export function containerReason(argv: string): string | null {
+export function containerReason(argv: string | string[]): string | null {
+	const command = Array.isArray(argv) ? argv.join(" ") : argv;
 	for (const [pattern, label] of CONTAINER_FORBIDDEN) {
-		if (pattern.test(argv)) {
+		if (pattern.test(command)) {
 			return label;
 		}
 	}
@@ -254,7 +280,7 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 		return;
 	}
 	const argv = Array.isArray(request.argv) ? request.argv.map((arg) => String(arg)) : [];
-	const reason = containerReason(argv.join(" "));
+	const reason = containerReason(argv);
 	if (reason) {
 		conn.end(
 			JSON.stringify({
@@ -448,6 +474,20 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 }
 
 export default function (pi: ExtensionAPI) {
+	let reportOnly = false;
+	let toolsBeforeReport: string[] = [];
+	pi.on("before_agent_start", (event: any) => {
+		// Custom continuations/retries must not re-enable tools during formatting.
+		if (event.messageType !== "user") return;
+		const next = String(event.prompt ?? "").startsWith("[SADOC_REPORT_ONLY]\n");
+		if (next && !reportOnly) {
+			toolsBeforeReport = pi.getActiveTools();
+			pi.setActiveTools([]);
+		} else if (!next && reportOnly) {
+			pi.setActiveTools(toolsBeforeReport);
+		}
+		reportOnly = next;
+	});
 	const failures = new Map<string, number>();
 	const commands = new Map<string, string>();
 	pi.on("tool_execution_end", (event: any) => {
@@ -482,6 +522,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event: any) => {
+		if (reportOnly) {
+			return { block: true, reason: "Report formatting only: return the complete report without tools." };
+		}
 		if (SHELL_TOOLS.has(event.toolName)) {
 			const command = String(event.input.command ?? "");
 			// The runtime is allowed here too when it has been enabled: the model

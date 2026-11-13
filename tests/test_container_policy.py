@@ -267,6 +267,8 @@ def test_helper_tags_containers_and_bounds_runtime_calls(tmp_path):
             'if sys.argv[1] == "wait": time.sleep(30)\n'
         )
         runtime.chmod(0o755)
+        workspace = work / "repo with spaces 'quote"
+        workspace.mkdir()
         result = subprocess.run(
             [bun, "run", "run.ts"],
             cwd=work,
@@ -281,7 +283,7 @@ def test_helper_tags_containers_and_bounds_runtime_calls(tmp_path):
                 "SADOC_CONTAINER_POLICY": policy.policy_json(),
                 "SADOC_ALLOW_CONTAINERS": "1",
                 "SADOC_CACHE_DIR": str(work / "cache"),
-                "SADOC_WORKSPACE": str(work),
+                "SADOC_WORKSPACE": str(workspace),
                 "FAKE_RUNTIME_LOG": str(work / "runtime.log"),
                 "FAKE_EXPECTED_PGID": str(os.getpgrp()),
             },

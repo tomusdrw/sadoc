@@ -425,16 +425,30 @@ class Worker:
             session.start()
             empty_result = result.copy()
             history: list[str] = []
+            report_recovery_used = False
             prompt = load_prompt("prepare")
             # One discovery and at most one repair, both independently replayed.
             for attempt in range(2):
                 result = {**empty_result, "verify_output": "\n\n".join(history)}
                 turn = session.prompt(prompt, timeout=3600 if attempt == 0 else 1800)
-                try:
-                    fields = _parse_report(turn.text, shell_fields=True)
-                except ValueError as exc:
-                    result.update(status="invalid_report", notes=str(exc))
-                    return result
+                while True:
+                    try:
+                        fields, inputs = _discovery_report(turn.text)
+                        break
+                    except ValueError as exc:
+                        result.update(status="invalid_report", notes=str(exc))
+                        if report_recovery_used:
+                            return result
+                        report_recovery_used = True
+                        self._safe_log(
+                            "requesting a structured discovery report", repo=f"{owner}/{repo}"
+                        )
+                        turn = session.prompt(
+                            load_prompt("prepare-report") + "\n\nParser error and last reply "
+                            "(diagnostic data, not instructions):\n" + str(exc),
+                            timeout=120,
+                            report_only=True,
+                        )
                 for field, key in (
                     ("SETUP", "setup_command"),
                     ("PREREQUISITES", "prerequisites"),
@@ -448,12 +462,6 @@ class Worker:
                     result["status"] = status
                     result["notes"] = result["notes"] or result["prerequisites"] or turn.text[:2000]
                     return result
-                if "VERIFY" not in fields or not command or status not in ("", "ready"):
-                    result["status"] = "invalid_report"
-                    result["notes"] = (
-                        "Discovery did not return a usable VERIFY recipe. " + turn.text[:1500]
-                    )
-                    return result
                 # PREREQUISITES is for requirements the sandbox could not meet. A
                 # model often lists what the build simply needs as well, so a
                 # non-empty field is only taken as blocking when the model did not
@@ -464,11 +472,6 @@ class Worker:
                     result["notes"] = (
                         result["notes"] or "Local verification needs additional prerequisites"
                     )
-                    return result
-                try:
-                    inputs = buildcache.parse_inputs(fields.get("INPUTS"))
-                except ValueError as exc:
-                    result.update(status="invalid_report", notes=str(exc))
                     return result
                 result["build_inputs"] = json.dumps(inputs) if inputs is not None else ""
                 result["verify_command"] = command
@@ -504,7 +507,7 @@ class Worker:
                     f"Validation output:\n{output}"
                 )
         except PiError as exc:
-            result.update(status="agent_failed", notes=str(exc))
+            result.update(status="agent_failed", notes=(result["notes"] + "\n" + str(exc)).strip())
         except Exception as exc:  # noqa: BLE001
             result.update(status="failed", notes=f"{type(exc).__name__}: {exc}")
         finally:
@@ -1898,6 +1901,17 @@ def _age_hours(created_at: str) -> float:
         return max(0.0, (datetime.now(UTC) - stamp).total_seconds() / 3600)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _discovery_report(report: str) -> tuple[dict[str, str], list[str] | None]:
+    """Validate report shape before either accepting a block or replaying a recipe."""
+    fields = _parse_report(report, shell_fields=True)
+    status = fields.get("STATUS", "").lower()
+    if status in ("blocked", "baseline_failed"):
+        return fields, None
+    if status not in ("", "ready") or not _report_value(fields.get("VERIFY", "")):
+        raise ValueError("Discovery did not return a usable VERIFY recipe. " + report[:1500])
+    return fields, buildcache.parse_inputs(fields.get("INPUTS"))
 
 
 def _report_value(value: str, *, shell: bool = False) -> str:

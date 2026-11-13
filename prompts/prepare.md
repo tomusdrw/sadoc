@@ -40,6 +40,57 @@ out test running or start a replacement against its database. If you cannot prov
 the full local recipe within the budget, return blocked with the exact command,
 last useful output, and prerequisite or runtime limit that prevented completion.
 
+## Playwright browser checks
+
+For Playwright suites, use the executable container helper provided at
+`$SADOC_PLAYWRIGHT_RUNNER`. From the package directory, first install dependencies
+with the project's lockfile-enforcing install command, then run:
+
+```bash
+node "$SADOC_PLAYWRIGHT_RUNNER" -- corepack pnpm test
+```
+
+Replace the command after `--` with this project's actual checks and package
+manager. The helper derives the image tag from the installed `playwright` or
+`@playwright/test` package. It runs the suite inside that exact version's official
+Ubuntu image, as the current non-root user, with the workspace and tool cache
+mounted. It launches, renders a page in, and closes Chromium, Firefox and WebKit
+before starting the suite. Failed preflight prevents the suite from running.
+The helper enables Chromium sandboxing for preflight; the suite keeps its own
+browser launch configuration.
+Inside the container, PLAYWRIGHT_BROWSERS_PATH is `/ms-playwright`, not the host
+cache path. Check that the image's Node version satisfies the project's toolchain
+requirements; if not, report the incompatibility instead of substituting versions.
+
+Use this helper for exploration AND the saved recipe. Do not copy libraries out
+of an older cached browser image, patch browser binaries, or try host-library
+overrides. If the matching image cannot run, report its exact error as blocked.
+Do not disable browser sandboxing or change the container security policy.
+
+When tests need PostgreSQL, start a fresh container with the version from CI and
+the project's test credentials. Keep it alive for the full command with a cleanup
+trap. Put it and the browser/test container on a private network. Use
+`podman network create --disable-dns "$network"` and the database container's IP
+from `podman inspect` if rootless container DNS is unavailable. The URL uses the
+internal database port (usually 5432), not a published host port:
+
+```bash
+# network and database name the disposable resources created by SETUP.
+# The URL uses its real test credentials, database name, and internal port.
+address=$(podman inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$database")
+test -n "$address"
+export TEST_DATABASE_URL="postgres://TEST_USER:TEST_PASSWORD@$address:5432/TEST_DB"
+node "$SADOC_PLAYWRIGHT_RUNNER" --network "$network" \
+  --postgres-env TEST_DATABASE_URL -- corepack pnpm test
+```
+
+The helper performs an authenticated `SELECT 1` using the project's `pg` package,
+from the same container and URL as the tests. A readiness probe inside the server
+container alone does not establish connectivity from the test process. Each test
+shard needs isolated database state. Put service startup and cleanup in the saved
+recipe; use `set -e -o pipefail` so piping test output to tail/tee cannot hide errors.
+The cleanup trap must remove the session's database container and private network.
+
 ## Prove the recipe
 
 Run setup, code generation, builds and tests, fixing environment/setup mistakes
@@ -139,6 +190,11 @@ cover everything. Use ["."] if you cannot narrow the inputs confidently. No glob
 absolute paths, generated artifacts, or paths outside the repository.
 
 ## Report
+
+Finish all cleanup and tool calls BEFORE returning the report. Your last settled
+assistant reply must contain the complete report, including when blocked. Never
+finish with "cleanup confirmed" or "see the report above". Do not claim that an
+unrun suite would pass on another host. Report only what you actually proved.
 
 Return exactly these fields. SETUP and VERIFY may contain multiple shell lines:
 newlines separate commands and are preserved, along with indentation. Do not

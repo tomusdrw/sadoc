@@ -278,7 +278,7 @@ def test_unusable_repair_retains_original_failure(project, replacement, status, 
     assert result["status"] == status
     assert reason in result["notes"]
     assert "original-failure" in result["verify_output"]
-    assert len(session.prompts) == 2
+    assert len(session.prompts) == (3 if status == "invalid_report" else 2)
     assert len(session.commands) == 2  # initial syntax and execution; no repair replay
     assert worker.verify_command("alice/repo") is None
 
@@ -289,6 +289,108 @@ def test_unclosed_shell_fence_is_an_invalid_report(project):
     result = worker.ensure_build_setup("alice", "repo", "main", git)
     assert result["status"] == "invalid_report"
     assert "Unclosed shell block" in result["notes"]
+    assert not session.commands
+
+
+@pytest.mark.parametrize(
+    "replacement,status",
+    [
+        (REPORT, "ok"),
+        ("STATUS: blocked\nVERIFY: NONE\nNOTES: WebKit libraries unavailable", "blocked"),
+    ],
+)
+def test_malformed_final_report_gets_tool_free_format_recovery(project, replacement, status):
+    worker, git, session = project
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        if len(self.prompts) == 1:
+            return TurnResult(text="Cleanup confirmed. The report above is final.", settled=True)
+        assert kwargs["report_only"] is True
+        assert kwargs["timeout"] <= 120
+        assert "Cleanup confirmed" in text
+        (git.path / "artifact").write_text("must not survive clean replay")
+        return TurnResult(text=replacement, settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == status, result["notes"]
+    assert len(session.prompts) == 2
+    assert len(session.commands) == (2 if status == "ok" else 0)
+    assert not (git.path / "artifact").exists()
+
+
+def test_format_recovery_is_bounded_and_never_accepts_the_earlier_report(project):
+    worker, git, session = project
+    session.report = "Cleanup confirmed. The report above is final."
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "invalid_report"
+    assert len(session.prompts) == 2
+    assert not session.commands
+    assert worker.verify_command("alice/repo") is None
+
+
+def test_format_recovery_cannot_repeat_after_recipe_repair(project):
+    worker, git, session = project
+    replies = iter(
+        [
+            "not a report",
+            "STATUS: ready\nVERIFY: printf original-error; false",
+            "again not a report",
+        ]
+    )
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        assert bool(kwargs.get("report_only")) == (len(self.prompts) == 2)
+        return TurnResult(text=next(replies), settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "invalid_report"
+    assert len(session.prompts) == 3
+    assert "original-error" in result["verify_output"]
+    assert worker.verify_command("alice/repo") is None
+
+
+def test_format_recovery_can_follow_a_malformed_recipe_repair(project):
+    worker, git, session = project
+    replies = iter(
+        [
+            "STATUS: ready\nVERIFY: printf original-error; false",
+            "Cleanup confirmed. The repaired recipe is above.",
+            REPORT,
+        ]
+    )
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        assert bool(kwargs.get("report_only")) == (len(self.prompts) == 3)
+        return TurnResult(text=next(replies), settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert len(session.prompts) == 3
+    assert len(session.commands) == 4  # syntax and clean replay for each recipe
+    assert "original-error" in result["verify_output"]
+    assert worker.verify_command("alice/repo")
+
+
+def test_format_recovery_errors_preserve_the_malformed_report_diagnosis(project):
+    worker, git, session = project
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        if kwargs.get("report_only"):
+            raise PiError("format timeout")
+        return TurnResult(text="Cleanup confirmed", settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "agent_failed"
+    assert "format timeout" in result["notes"]
+    assert "Cleanup confirmed" in result["notes"]
     assert not session.commands
 
 
@@ -394,7 +496,7 @@ def test_failures_are_actionable_and_not_repeated_for_each_update_group(
     assert result["status"] == status
     assert detail in result["notes"]
     worker.ensure_build_setup("alice", "repo", "main", git)
-    assert len(session.prompts) == 1
+    assert len(session.prompts) == (2 if status == "invalid_report" else 1)
     assert worker.verify_command("alice/repo") is None
 
 

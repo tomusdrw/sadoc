@@ -107,7 +107,20 @@ assert.equal(timed.status, 124, timed.stderr);
 assert.ok(!timed.stdout.includes("escaped-timeout"));
 
 const handlers: Record<string, Function> = {};
-sandbox({on(name: string, handler: Function) { handlers[name] = handler; }} as any);
+let activeTools = ["bash", "read", "write", "edit"];
+sandbox({on(name: string, handler: Function) { handlers[name] = handler; },
+    getActiveTools() { return [...activeTools]; },
+    setActiveTools(names: string[]) { activeTools = [...names]; },
+} as any);
+await handlers.before_agent_start({messageType: "user", prompt: "[SADOC_REPORT_ONLY]\nFormat the report"});
+assert.deepEqual(activeTools, []);
+for (const toolName of ["bash", "read", "write", "edit", "codemode"]) {
+    assert.equal((await handlers.tool_call({toolName, input: {}})).block, true);
+}
+await handlers.before_agent_start({messageType: "custom"});
+assert.deepEqual(activeTools, []);
+await handlers.before_agent_start({messageType: "user", prompt: "Repair the recipe"});
+assert.deepEqual(activeTools, ["bash", "read", "write", "edit"]);
 for (let i = 0; i < 2; i++) {
     const event = {toolName: "bash", toolCallId: `failed-${i}`, input: {command: "make test", timeout: 99999}};
     assert.equal(await handlers.tool_call(event), undefined);

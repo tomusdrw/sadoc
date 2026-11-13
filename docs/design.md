@@ -304,6 +304,37 @@ continuations are preserved. Optional fenced bash blocks protect heredocs whose
 contents resemble report headers; use a longer fence when the content includes
 backticks. Prose fields continue to fold continuation lines into spaces.
 
+Cleanup must precede the final structured reply. A settled nonempty reply with
+missing/invalid fields gets one formatting-only recovery, shared across initial
+discovery and recipe repair, with a 120-second timeout. The sandbox extension
+removes active tools for this turn and rejects residual calls, so formatting cannot
+restart exploration or cleanup. The next ordinary prompt restores the prior tool
+set. Only the recovered settled reply is parsed; earlier assistant messages never
+substitute for a final report. Another malformed reply, provider error, or timeout
+remains a failure. A recovered ready report still requires clean replay.
+
+Playwright projects have an executable container path via
+`node "$SADOC_PLAYWRIGHT_RUNNER" [--network NAME] [--postgres-env NAME] -- COMMAND...`.
+After a locked dependency install, the helper resolves the installed Playwright
+version (rejecting conflicting package versions) and runs its matching official
+Ubuntu image through the existing Podman shim. It mounts only workspace/cache,
+uses the caller's uid in a rootless user namespace, enables Chromium sandboxing
+for its preflight, and uses the image's `/ms-playwright` browsers. The requested
+suite retains its own browser launch configuration. All three browser engines must
+launch/render/close before the requested suite runs. Optional PostgreSQL preflight
+uses the project's `pg` package and an explicit test URL to perform `SELECT 1`
+from the same container as the tests. Suite exit codes propagate unchanged.
+The shim checks mount sources directly from argv so workspace/cache paths with
+spaces or literal quotes retain their boundaries; outside mounts remain refused.
+
+Database containers and tests can share a disposable private network. Where
+rootless DNS services are unavailable, create it with `--disable-dns` and inspect
+the database's address. Never confuse a host-published port with the database's
+internal port. Recipes own network cleanup as well as database cleanup. Image
+and runtime errors remain blocking; do not copy mismatched browser libraries
+onto the host or weaken security settings. The image's Node version must also
+satisfy the target project's toolchain requirements.
+
 The recipe is evidence only after independent replay. Discovery saves the
 original commit, resets to it, removes ignored artifacts and nested fixture
 clones, and deinitializes submodules before executing the commands. Final cleanup

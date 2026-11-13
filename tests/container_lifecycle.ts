@@ -17,12 +17,26 @@ const first = await run('podman run --rm example.invalid/image echo hello');
 assert.equal(first.code, 0, first.output);
 const second = await run('podman container create example.invalid/image');
 assert.equal(second.code, 0, second.output);
+// The shim receives expanded argv, including spaces and literal quotes in paths.
+for (const mount of ['--volume "$SADOC_WORKSPACE:/w:rw"', '-v"$SADOC_WORKSPACE:/w"',
+    '--volume="$SADOC_WORKSPACE:/w"', '--mount "type=bind,source=$SADOC_WORKSPACE,target=/w"']) {
+    const allowed = await run(`podman run ${mount} example.invalid/image`);
+    assert.equal(allowed.code, 0, allowed.output);
+}
+for (const mount of ['--volume "$SADOC_WORKSPACE other:/w"',
+    '--mount "type=bind,src=$SADOC_WORKSPACE other,target=/w"']) {
+    const outside = await run(`podman run ${mount} example.invalid/image`);
+    assert.notEqual(outside.code, 0);
+    assert.ok(outside.output.includes('Blocked by sadoc policy'), outside.output);
+}
 const global = await run('podman --log-level=error run example.invalid/image');
 assert.notEqual(global.code, 0);
 assert.ok(global.output.includes('Blocked by sadoc policy'), global.output);
 const nestedGlobal = await run('podman container --log-level=error run example.invalid/image');
 assert.notEqual(nestedGlobal.code, 0);
 const calls = readFileSync(process.env.FAKE_RUNTIME_LOG!, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+assert.equal(calls.length, 6);
+assert.ok(calls[2].includes(`${process.env.SADOC_WORKSPACE}:/w:rw`));
 for (const call of calls) assert.ok(call.includes(`io.sadoc.session=${process.env.SADOC_SESSION_ID}`));
 // A helper command also terminates independently of the sandbox process.
 const timeout = await run('podman wait forever', 0.2);

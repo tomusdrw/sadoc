@@ -207,6 +207,7 @@ class PiSession:
                     env.pop(key, None)
         env["PI_CODING_AGENT_DIR"] = str(self.agent_dir)
         env["SADOC_WORKSPACE"] = self.cwd
+        env["SADOC_PLAYWRIGHT_RUNNER"] = str(REPO_ROOT / "extensions" / "playwright-runner.mjs")
         env["SADOC_SESSION_ID"] = self._session_id
         env["SADOC_DISCOVERY"] = "1" if self._discovery else "0"
         env["SADOC_REAL_HOME"] = str(Path.home())
@@ -374,10 +375,14 @@ class PiSession:
         raise PiError(f"timeout waiting for '{_cmd}' response{detail}")
 
     # ------------------------------------------------------------ prompt
-    def prompt(self, message: str, timeout: int | None = None) -> TurnResult:
+    def prompt(
+        self, message: str, timeout: int | None = None, *, report_only: bool = False
+    ) -> TurnResult:
         """Send a prompt and collect the turn's events until the agent settles."""
         result = TurnResult()
         started = time.monotonic()
+        if report_only:
+            message = "[SADOC_REPORT_ONLY]\n" + message
         req_id = self._next_id()
         self._send({"id": req_id, "type": "prompt", "message": message})
 
