@@ -68,6 +68,9 @@ def project(tmp_path, monkeypatch):
                 },
             }
 
+        def diagnostics(self):
+            return "{}"
+
         def close(self):
             pass
 
@@ -429,8 +432,10 @@ def test_old_database_migrates_without_losing_setup(tmp_path):
             fingerprint="tree",
             ci_only="deployment",
             verify_output="passed",
+            diagnostics='{"tools": []}',
         )
         assert state.setup("alice/repo")["setup_command"] == "make generate"
+        assert state.setup("alice/repo")["diagnostics"] == '{"tools": []}'
     finally:
         state.close()
 
@@ -855,3 +860,13 @@ def test_unmet_prerequisites_still_block_when_the_status_is_not_ready(project):
     result = worker.ensure_build_setup("alice", "repo", "main", git)
     assert result["status"] == "blocked"
     assert worker.verify_command("alice/repo") is None
+
+
+@pytest.mark.parametrize("report", [REPORT, PiError("pi prompt timed out")])
+def test_discovery_diagnostics_are_persisted_even_on_failure(project, report):
+    worker, git, session = project
+    session.report = report
+    session.diagnostics = lambda self: '{"tools":[{"command":"make check","output":"last output"}]}'
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["diagnostics"] == worker.state.setup("alice/repo")["diagnostics"]
+    assert "last output" in result["diagnostics"]

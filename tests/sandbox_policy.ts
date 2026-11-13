@@ -8,13 +8,17 @@
  * Run it with bun:
  *   SADOC_CONTAINER_POLICY='{"container": [...], "runtimes": [...]}' bun run run.ts
  */
-import { policyReason, containerReason } from "./sandbox.ts";
+import sandbox, { buildSandbox, policyReason, containerReason } from "./sandbox.ts";
+
+import { spawnSync } from "node:child_process";
+import assert from "node:assert/strict";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
 
 // [command, allowedRuntime, shouldBlock]
 const cases: Array<[string, string | null, boolean]> = [
 	// The allowed runtime, used properly.
+    ["podman run --rm docker.io/library/postgres:17-alpine", "podman", false],
 	["podman run --rm -v .:/w -w /w node:22 npm test", "podman", false],
 	['podman run --rm -v "$PWD:/w" -w /w postgres:17 pg_ctl start', "podman", false],
 	// The allowed runtime, escaping.
@@ -71,6 +75,8 @@ console.log(`  ${cases.length - bad}/${cases.length} policy cases behave as expe
 // container rules on its own. These are the same rules, checked against the
 // argument list the helper receives.
 const containerCases: Array<[string, boolean]> = [
+    ["run --label io.sadoc.session=other example.invalid/image", true],
+    ["run --label-file labels example.invalid/image", true],
 	["run --rm -v .:/w -w /w node:22 npm test", false],
 	["build -t thing .", false],
 	["run --rm --privileged -v /:/host alpine", true],
@@ -94,4 +100,29 @@ for (const [argv, shouldBlock] of containerCases) {
 console.log(
 	`  ${containerCases.length - containerBad}/${containerCases.length} container cases behave as expected`,
 );
+// Exercise real command execution: a hung subprocess must not reach the marker.
+const timed = spawnSync("bash", ["-c", buildSandbox("sleep 5; echo escaped-timeout", WORKSPACE, 0.1)],
+    {encoding: "utf8", timeout: 3000});
+assert.equal(timed.status, 124, timed.stderr);
+assert.ok(!timed.stdout.includes("escaped-timeout"));
+
+const handlers: Record<string, Function> = {};
+sandbox({on(name: string, handler: Function) { handlers[name] = handler; }} as any);
+for (let i = 0; i < 2; i++) {
+    const event = {toolName: "bash", toolCallId: `failed-${i}`, input: {command: "make test", timeout: 99999}};
+    assert.equal(await handlers.tool_call(event), undefined);
+    assert.equal(event.input.timeout, 900);
+    await handlers.tool_execution_end({toolCallId: event.toolCallId, toolName: "bash", isError: true});
+}
+assert.equal((await handlers.tool_call({toolName: "bash", toolCallId: "third", input: {command: "make test"}})).block, true);
+for (let i = 0; i < 4; i++) {
+    const event = {toolName: "bash", toolCallId: `ok-${i}`, input: {command: "make build", timeout: 10}};
+    assert.equal(await handlers.tool_call(event), undefined);
+    assert.equal(event.input.timeout, 10);
+    await handlers.tool_execution_end({toolCallId: event.toolCallId, toolName: "bash", isError: false});
+}
+for (let i = 0; i < 2; i++) {
+    assert.equal(await handlers.tool_call({toolName: "bash", toolCallId: `parallel-${i}`, input: {command: "make parallel"}}), undefined);
+}
+assert.equal((await handlers.tool_call({toolName: "bash", toolCallId: "parallel-third", input: {command: "make parallel"}})).block, true);
 process.exit(bad === 0 && containerBad === 0 ? 0 : 1);

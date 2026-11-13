@@ -155,6 +155,7 @@ class State:
             "ci_only": "TEXT DEFAULT ''",
             "verify_output": "TEXT DEFAULT ''",
             "build_inputs": "TEXT DEFAULT ''",
+            "diagnostics": "TEXT DEFAULT ''",
         },
     }
 
@@ -337,20 +338,21 @@ class State:
         ci_only: str = "",
         verify_output: str = "",
         build_inputs: str = "",
+        diagnostics: str = "",
     ) -> None:
         """Remember how to build a repository, so it only has to be worked out once."""
         now = time.time()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO repo_setup (repo,verify_command,prerequisites,notes,status,"
-                "created_at,updated_at,setup_command,fingerprint,ci_only,verify_output,build_inputs) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "created_at,updated_at,setup_command,fingerprint,ci_only,verify_output,build_inputs,diagnostics) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(repo) DO UPDATE SET verify_command=excluded.verify_command,"
                 "prerequisites=excluded.prerequisites, notes=excluded.notes,"
                 "status=excluded.status, updated_at=excluded.updated_at, "
                 "setup_command=excluded.setup_command, fingerprint=excluded.fingerprint, "
                 "ci_only=excluded.ci_only, verify_output=excluded.verify_output, "
-                "build_inputs=excluded.build_inputs",
+                "build_inputs=excluded.build_inputs, diagnostics=excluded.diagnostics",
                 (
                     repo,
                     verify_command,
@@ -364,6 +366,7 @@ class State:
                     ci_only[:2000],
                     verify_output[-20000:],
                     build_inputs,
+                    diagnostics,
                 ),
             )
 

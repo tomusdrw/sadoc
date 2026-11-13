@@ -392,6 +392,7 @@ class Worker:
             "verify_output": "",
             "build_inputs": "",
             "status": "unknown",
+            "diagnostics": "",
         }
         if git is None:
             try:
@@ -418,6 +419,7 @@ class Worker:
             extra_secrets=self._notify_secret_names(),
             allow_containers=self.cfg.allow_containers,
             container_runtime=self.cfg.container_runtime,
+            discovery=True,
         )
         try:
             session.start()
@@ -507,6 +509,7 @@ class Worker:
             result.update(status="failed", notes=f"{type(exc).__name__}: {exc}")
         finally:
             cleanup_errors = []
+            result["diagnostics"] = session.diagnostics()
             try:
                 session.close()
             except Exception as exc:  # noqa: BLE001

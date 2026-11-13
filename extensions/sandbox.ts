@@ -35,6 +35,9 @@ const TOOL_CACHE = process.env.SADOC_CACHE_DIR || "/tmp/depsbot-toolcache";
 // onto the machine. Off by default.
 const ALLOW_CONTAINERS = process.env.SADOC_ALLOW_CONTAINERS === "1";
 const RUNTIME = process.env.SADOC_CONTAINER_RUNTIME || "podman";
+const DISCOVERY = process.env.SADOC_DISCOVERY === "1";
+const COMMAND_TIMEOUT = DISCOVERY ? 900 : 1800;
+const SESSION_ID = process.env.SADOC_SESSION_ID || String(process.pid);
 const SHELL_TOOLS = new Set(["bash", "shell"]);
 
 // Where the container helper keeps its socket, its images and the shim that
@@ -42,7 +45,7 @@ const SHELL_TOOLS = new Set(["bash", "shell"]);
 const CONTAINER_DIR = join(TOOL_CACHE, "containers");
 const CONTAINER_RUN = join(CONTAINER_DIR, "run");
 const CONTAINER_BIN = join(CONTAINER_DIR, "bin");
-const CONTAINER_SOCKET = join(CONTAINER_RUN, "sadoc.sock");
+const CONTAINER_SOCKET = join(CONTAINER_RUN, `${SESSION_ID}.sock`);
 
 const FORBIDDEN: Array<[RegExp, string]> = [
 	[/\bgit\s+push\b/i, "git push"],
@@ -175,7 +178,7 @@ def main():
     if not path:
         sys.stderr.write("sadoc: the container helper is not running\\n")
         return 127
-    request = json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}).encode()
+    request = json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "timeout": float(os.environ.get("SADOC_COMMAND_TIMEOUT", "1800"))}).encode()
     try:
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         conn.connect(path)
@@ -243,7 +246,7 @@ function handleContainerRequest(conn: Socket, chunk: Buffer): void {
 }
 
 function serveContainerRequest(conn: Socket, chunk: Buffer): void {
-	let request: { argv?: unknown; cwd?: unknown } = {};
+	let request: { argv?: unknown; cwd?: unknown; timeout?: unknown } = {};
 	try {
 		request = JSON.parse(chunk.toString());
 	} catch {
@@ -263,9 +266,17 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 		return;
 	}
 	const cwd = typeof request.cwd === "string" ? request.cwd : WORKSPACE;
+	// Labels are assigned by the orchestrator's helper, never by the model.
+	// The orchestrator can remove these even if pi is forcibly terminated.
+	const verbIndex = argv[0] === "container" ? 1 : 0;
+	if (argv[verbIndex] === "run" || argv[verbIndex] === "create") {
+		argv.splice(verbIndex + 1, 0, "--label", `io.sadoc.session=${SESSION_ID}`);
+	}
+	const seconds = Number(request.timeout);
+	const limit = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 1800) : COMMAND_TIMEOUT;
 	let child;
 	try {
-		child = spawn(RUNTIME, argv, { cwd, env: containerEnvironment() });
+		child = spawn("timeout", ["--foreground", "--kill-after=5s", `${limit}s`, RUNTIME, ...argv], { cwd, env: containerEnvironment() });
 	} catch (exc) {
 		conn.end(
 			JSON.stringify({ code: 1, stdout: "", stderr: `sadoc: cannot run ${RUNTIME}: ${exc}\n` }),
@@ -275,10 +286,10 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 	let stdout = "";
 	let stderr = "";
 	child.stdout?.on("data", (data) => {
-		stdout += String(data);
+		stdout = (stdout + String(data)).slice(-1000000);
 	});
 	child.stderr?.on("data", (data) => {
-		stderr += String(data);
+		stderr = (stderr + String(data)).slice(-1000000);
 	});
 	child.on("error", (exc) => {
 		stderr += `sadoc: ${exc}\n`;
@@ -363,7 +374,7 @@ export function policyReason(command: string, allowedRuntime: string | null): st
 }
 
 /** Build the bubblewrap argv for a single command. */
-export function buildSandbox(command: string, cwd: string): string {
+export function buildSandbox(command: string, cwd: string, timeoutSeconds: number = COMMAND_TIMEOUT): string {
 	const scratch = "/tmp/depsbot-scratch";
 	const cache = TOOL_CACHE;
 	const realHome = process.env.SADOC_REAL_HOME || "/root";
@@ -378,6 +389,7 @@ export function buildSandbox(command: string, cwd: string): string {
 		// The persistent cache, named so the agent can install tools into it
 		// instead of into a temporary directory that is thrown away each run.
 		`export SADOC_TOOL_CACHE=${q(cache)}`,
+		`export SADOC_COMMAND_TIMEOUT=${timeoutSeconds}`,
 		// The package managers' caches live in the persistent cache directory,
 		// not in the scratch tmpfs, so a run does not re-download the registry.
 		`export CARGO_HOME=${q(cache)}/cargo`,
@@ -403,7 +415,7 @@ export function buildSandbox(command: string, cwd: string): string {
 		command,
 	].join("\n");
 	const argv = [
-		"bwrap",
+		"timeout", "--kill-after=5s", `${timeoutSeconds}s`, "bwrap",
 		...(ALLOW_NET ? [] : ["--unshare-net"]),
 		"--unshare-pid",
 		"--unshare-ipc",
@@ -435,6 +447,15 @@ export function buildSandbox(command: string, cwd: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	const failures = new Map<string, number>();
+	const commands = new Map<string, string>();
+	pi.on("tool_execution_end", (event: any) => {
+		const command = commands.get(event.toolCallId);
+		commands.delete(event.toolCallId);
+		if (command === undefined) return;
+		if (event.isError) failures.set(command, (failures.get(command) || 0) + 1);
+		else failures.delete(command);
+	});
 	if (ALLOW_CONTAINERS) {
 		// The runtime runs outside the sandbox; the shim inside it hands the
 		// request over here.
@@ -454,7 +475,7 @@ export default function (pi: ExtensionAPI) {
 		const local = createLocalBashOperations();
 		return { operations: {
 			exec(command: string, cwd: string, options: any) {
-				return local.exec(buildSandbox(command, cwd), cwd, options);
+				return local.exec(buildSandbox(command, cwd, 1800), cwd, options);
 			},
 		} };
 	});
@@ -474,8 +495,16 @@ export default function (pi: ExtensionAPI) {
 						`The orchestrator owns all remote state (push, PR create, PR merge).`,
 				};
 			}
-			// Mutate in place: pi executes the (mutated) command.
-			event.input.command = buildSandbox(command, String(event.input.cwd ?? WORKSPACE));
+			const running = [...commands.values()].filter(value => value === command).length;
+			if (DISCOVERY && (failures.get(command) || 0) + running >= 2) {
+				return { block: true, reason: "Two attempts of this command failed or are still running. Inspect their results and fix the cause, or report blocked/baseline_failed; do not repeat it." };
+			}
+			if (DISCOVERY) commands.set(event.toolCallId, command);
+			const requested = Number(event.input.timeout);
+			const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, COMMAND_TIMEOUT) : COMMAND_TIMEOUT;
+			// Mutate in place: pi executes the (mutated) command and timeout.
+			event.input.timeout = limit;
+			event.input.command = buildSandbox(command, String(event.input.cwd ?? WORKSPACE), limit);
 			return undefined;
 		}
 

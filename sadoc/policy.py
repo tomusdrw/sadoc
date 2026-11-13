@@ -19,7 +19,7 @@ import re
 # runtime may ever be enabled. Docker never may: its socket is root-equivalent,
 # so reaching the daemon would be reaching root.
 RUNTIME_PATTERNS: list[tuple[str, str, bool]] = [
-    ("docker", r"\bdocker\b", False),
+    ("docker", r"\bdocker\b(?!\.)", False),
     ("podman", r"\bpodman\b", True),
 ]
 
@@ -29,6 +29,13 @@ RUNTIME_PATTERNS: list[tuple[str, str, bool]] = [
 #
 # Each entry is a regular expression and the reason it is refused.
 CONTAINER_FORBIDDEN: list[tuple[str, str]] = [
+    # Global options can change storage/remote endpoints or hide the verb from
+    # ownership tagging. Recipes use subcommand-first calls through the helper.
+    (
+        r"(?:^|\bpodman\s+)(?:container\s+)?-(?!-(?:help|version)(?:\s|$)|[hv](?:\s|$))",
+        "global runtime options; put the subcommand first",
+    ),
+    (r"\bio\.sadoc\.session\b|--label-file\b", "overriding the container ownership label"),
     (r"--privileged\b", "a privileged container"),
     (r"--(?:net|network|network-mode)[= ]host\b", "the host network"),
     (r"--pid[= ]host\b", "the host pid namespace"),

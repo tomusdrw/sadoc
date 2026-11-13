@@ -159,3 +159,196 @@ def test_empty_final_answer_cannot_reuse_an_intermediate_recipe(tmp_path):
     )
     with pytest.raises(PiError, match="empty"):
         session.prompt("discover")
+
+
+def test_timeout_identifies_active_command_and_preserves_partial_output(tmp_path):
+    import json
+
+    session = session_with_events(
+        tmp_path,
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "slow",
+            "toolName": "bash",
+            "args": {"command": "pnpm test"},
+        },
+        {
+            "type": "tool_execution_update",
+            "toolCallId": "slow",
+            "toolName": "bash",
+            "partialResult": {"content": [{"type": "text", "text": "waiting for database"}]},
+        },
+    )
+    with pytest.raises(PiError, match="pnpm test"):
+        session.prompt("discover", timeout=0.01)
+    diagnostic = json.loads(session.diagnostics())
+    assert diagnostic["active_tools"][0]["command"] == "pnpm test"
+    assert diagnostic["active_tools"][0]["output"] == "waiting for database"
+    assert diagnostic["active_tools"][0]["elapsed_s"] >= 0
+
+
+def test_diagnostics_bound_output_and_keep_completed_tool_timing(tmp_path):
+    import json
+
+    session = session_with_events(
+        tmp_path,
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "a",
+            "toolName": "bash",
+            "args": {"command": "make check"},
+        },
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "a",
+            "toolName": "bash",
+            "isError": True,
+            "result": {"content": [{"type": "text", "text": "x" * 100000 + "failure"}]},
+        },
+        {"type": "agent_settled"},
+    )
+    with pytest.raises(PiError):
+        session.prompt("discover")
+    raw = session.diagnostics()
+    assert len(raw) < 10000
+    diagnostic = json.loads(raw)
+    assert diagnostic["active_tools"] == []
+    tool = diagnostic["tools"][-1]
+    assert tool["output"].endswith("failure")
+    assert tool["command"] == "make check"
+    assert tool["is_error"] is True
+    assert tool["duration_s"] >= 0
+
+
+def test_session_environments_have_unique_container_ownership(tmp_path):
+    a = PiSession(tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path)
+    b = PiSession(tmp_path, a.model, tmp_path)
+    assert a._build_env()["SADOC_SESSION_ID"] != b._build_env()["SADOC_SESSION_ID"]
+
+
+def test_forced_close_removes_only_owned_containers(tmp_path, monkeypatch):
+    import subprocess
+
+    session = PiSession(
+        tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path, allow_containers=True
+    )
+    session._proc = Mock()
+    session._proc.wait.side_effect = [subprocess.TimeoutExpired("pi", 20), None]
+    calls = []
+
+    def runtime(argv, **kwargs):
+        calls.append(argv)
+        if "ps" in argv:
+            assert f"label=io.sadoc.session={session._build_env()['SADOC_SESSION_ID']}" in argv
+            return subprocess.CompletedProcess(argv, 0, "abc123\n", "")
+        assert argv == ["podman", "rm", "--force", "--volumes", "abc123"]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("sadoc.piworker.subprocess.run", runtime)
+    session.close()
+    assert len(calls) == 2
+
+
+def test_container_cleanup_failure_is_reported(tmp_path, monkeypatch):
+    import subprocess
+
+    session = PiSession(
+        tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path, allow_containers=True
+    )
+    session._proc = Mock()
+    monkeypatch.setattr(
+        "sadoc.piworker.subprocess.run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "runtime unavailable"),
+    )
+    with pytest.raises(PiError, match="container cleanup"):
+        session.close()
+
+
+def test_rpc_user_message_string_does_not_break_diagnostics(tmp_path):
+    session = session_with_events(
+        tmp_path,
+        {"type": "message_end", "message": {"role": "user", "content": "discover"}},
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "ready"}],
+            },
+        },
+        {"type": "agent_settled"},
+    )
+    assert session.prompt("discover").text == "ready"
+
+
+def test_rpc_recipe_timeout_retains_command_and_streamed_output(tmp_path):
+    import json
+
+    session = session_with_events(
+        tmp_path,
+        {"type": "bash_execution_update", "id": "req-1", "delta": "waiting for database\n"},
+    )
+    with pytest.raises(PiError, match="make check"):
+        session.bash("make check", timeout=0.01)
+    active = json.loads(session.diagnostics())["active_tools"]
+    assert active[0]["command"] == "make check"
+    assert active[0]["output"].endswith("waiting for database\n")
+
+
+def test_rpc_recipe_completion_is_timed_and_bounds_output(tmp_path):
+    import json
+
+    session = session_with_events(
+        tmp_path,
+        {
+            "type": "response",
+            "id": "req-1",
+            "success": True,
+            "data": {"output": "x" * 100000 + "done", "exitCode": 1},
+        },
+    )
+    session.bash("make check")
+    diagnostics = json.loads(session.diagnostics())
+    assert not diagnostics["active_tools"]
+    assert diagnostics["tools"][-1]["duration_s"] >= 0
+    assert diagnostics["tools"][-1]["is_error"]
+    assert diagnostics["tools"][-1]["output"].endswith("done")
+    assert len(diagnostics["tools"][-1]["output"]) <= 4000
+
+
+def test_close_kills_helper_descendants_before_container_cleanup(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import time
+
+    marker = tmp_path / "late-container"
+    script = (
+        "import os,sys,time\n"
+        "if os.fork() == 0:\n"
+        " time.sleep(0.5)\n"
+        ' open(sys.argv[1], "w").write("late create")\n'
+        " os._exit(0)\n"
+        'print("started", flush=True)\n'
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(marker)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+        text=True,
+    )
+    session = PiSession(tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path)
+    session._proc = proc
+    session._process_group = proc.pid
+    try:
+        assert proc.stdout.readline().strip() == "started"
+        session.close()
+        time.sleep(0.7)
+        assert not marker.exists()
+    finally:
+        try:
+            os.killpg(proc.pid, 9)
+        except ProcessLookupError:
+            pass
+        proc.wait()

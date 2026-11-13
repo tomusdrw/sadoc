@@ -308,7 +308,16 @@ No extra setup command is needed to enable discovery: it runs automatically when
 Sadoc processes updates. Overrides must include dependency installation and code
 generation too, since they replace the entire discovered recipe.
 
-For `agent_failed`, check the configured pi/model endpoint; for `blocked`, supply
+Discovery shell commands have a 15-minute limit; the same failing command may
+execute twice before further identical retries are blocked. Complete recipe replay
+has a separate 30-minute limit. Discovery retains a bounded local JSON diagnostic
+record (recent commands, timings, output tails, stderr, and unfinished tools) in
+`repo_setup.diagnostics`, including when the one-hour discovery limit expires.
+Session-owned containers are removed on shutdown, including forced termination.
+Use fully qualified, project-pinned service images and disposable test databases;
+only downloads and images should be reused between runs.
+
+For `agent_failed`, inspect `diagnostics` and the configured pi/model endpoint; for `blocked`, supply
 the reported local prerequisites. `baseline_failed` means a check failed before
 dependency changes. `validation_failed` means the saved commands could not
 reproduce discovery's result. `cleanup_failed` means the disposable checkout or
@@ -338,6 +347,7 @@ try:
             "build_inputs",
             "notes",
             "verify_output",
+            "diagnostics",
         ):
             print(f"{key}: {row[key]}")
 finally:

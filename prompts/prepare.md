@@ -21,6 +21,18 @@ Do not request production credentials. Record such checks under CI_ONLY, with th
 reason they cannot run locally. Run every applicable local build/test check; do not
 silently omit a failing local test or label it CI-only to get a passing result.
 
+## Stay within the discovery budget
+
+Discovery has one hour total. Each shell command is capped at 15 minutes; use
+shorter timeouts for probes, service readiness and network requests. Repeating an
+identical failed command more than twice is blocked. Do not evade this with shell
+formatting changes: retry only after identifying and correcting the cause.
+Inspect the last output after a timeout. Split long suites using the project's
+supported test sharding, with an isolated database per shard. Never leave a timed
+out test running or start a replacement against its database. If you cannot prove
+the full local recipe within the budget, return blocked with the exact command,
+last useful output, and prerequisite or runtime limit that prevented completion.
+
 ## Prove the recipe
 
 Run setup, code generation, builds and tests, fixing environment/setup mistakes
@@ -32,7 +44,11 @@ Your recipe will be replayed on a clean checkout with ignored artifacts removed
 and in a fresh shell. SETUP must include everything needed to reproduce your
 successful run: installs, tool paths, environment exports, service startup and
 code generation. Shell state and scratch HOME files do not persist between tool
-calls. SETUP and VERIFY will run together in one bash shell, starting at the repo
+calls. Each shell command has a fresh PID namespace: a background service started
+inside it dies when that command ends. Start native services and run their checks
+in the same command with cleanup, or use a detached container for a service that
+must span discovery commands. Do not reuse old service-control scripts or data
+from the cache as proof of a working environment. SETUP and VERIFY will run together in one bash shell, starting at the repo
 root. Use relative paths and idempotent steps; do not depend on files you manually
 created during exploration. Clean up any local services you start (use a trap).
 
@@ -42,8 +58,8 @@ runs and is wiped only by the person who owns the machine. Anything you put in
 `/tmp` or in the scratch `HOME` is thrown away, and the next run has to download
 and rebuild it all again. So: put downloaded tools in
 `$SADOC_TOOL_CACHE/<tool>`, put package-manager caches and stores there (the
-package managers already do), and put browser downloads and database data
-directories there too. Then a later run finds them already in place.
+package managers already do), and put browser downloads there too. Do not put mutable test database data
+in this shared cache. Then a later run finds them already in place.
 
 The cache is yours to use, but it is also where the recipe's setup belongs: if
 the recipe installs a tool into `/tmp`, the recipe will have to install it again
@@ -57,9 +73,9 @@ container image, not in the cache.
 The runtime is the one named by `SADOC_CONTAINER_RUNTIME` (normally `podman`).
 It runs rootless, so it needs no privileges, and it has a normal user
 namespace, so an image that runs as its own user - a database, nearly all of
-them - works as it should. The images and the containers live under
-`$SADOC_TOOL_CACHE/containers`, so a later run finds them already in place.
-Build the image once and run the checks inside it.
+them - works as it should. Image layers live under `$SADOC_TOOL_CACHE/containers`, so later runs reuse the
+downloads. Containers themselves and their mutable test data are disposable.
+Build the image once and run the checks inside fresh containers.
 
 A container must stay inside the workspace: no `--privileged`, no host
 network, no host pid/ipc/uts namespace, no extra capabilities, no host
@@ -70,16 +86,36 @@ The runtime is reached through a helper, so it works exactly as the `podman`
 command does: `podman build`, `podman run`, `podman ps`, `podman images`. The
 container has the network when the sandbox allows it.
 
-If the runtime does not work here, say so under PREREQUISITES and install the
-service into the cache instead.
+Use the exact service versions specified by CI or project documentation. Use
+fully qualified image names (for example docker.io/library/postgres:17-alpine),
+not short names that require an interactive registry choice. An image pull error
+is not permission to substitute a different version.
+
+Database state must be fresh for each independent check run and replay. Use a
+unique container name, --rm, and a fresh disposable data directory or volume.
+Use a random UUID for names; $$ is not unique across sandbox commands because the
+PID namespace is recreated. Do not bind any cached database directory into a
+service container. For PostgreSQL, set PGDATA=/var/lib/postgresql/sadoc-data in
+the container writable layer (no data bind mount), outside the image's declared
+volume, and match CI's POSTGRES_USER,
+POSTGRES_PASSWORD and POSTGRES_DB. Changing these variables on an existing data
+directory does not recreate users/databases. Never reuse another repo's database
+or run independent test shards against the same mutable database. Register an
+EXIT/INT/TERM cleanup trap before starting services. The orchestrator also removes
+session-owned containers on shutdown, but each recipe must clean up after itself.
+
+Check readiness with a bounded loop and a real authenticated connection to the
+expected database, not just an open TCP port. On failure inspect service logs once
+and report the unmet prerequisite. If the runtime is unavailable, report blocked;
+do not spend the discovery budget compiling a database or installing host libraries.
 
 Either way, the recipe has to be self-contained and repeatable: it creates what
 it needs, runs the checks, and cleans up after itself.
 
 Use installed or project-pinned toolchains. You have no root, sudo or systemd
 on the machine, and no Docker: the Docker socket is root-equivalent and is
-never used. The container runtime named by `SADOC_CONTAINER_RUNTIME` is
-available, and inside a container you are root. Writable locations are the
+never used. Check SADOC_ALLOW_CONTAINERS before using SADOC_CONTAINER_RUNTIME; the runtime is
+only available when containers are enabled. Images may run as a non-root user. Writable locations are the
 repository, the package-manager cache and the container runtime's own storage;
 scratch HOME is temporary. If a necessary system library or local service
 cannot be provided within these constraints, explain it under PREREQUISITES.
@@ -135,11 +171,10 @@ check that *can* run locally cannot be run, or does not pass. Use baseline_faile
 when a check fails on unchanged project source after setup is complete. Never
 report VERIFY: NONE without an explicit status and a useful reason in NOTES.
 
-A check that cannot run locally - because it needs a browser, a system library
-or a service that needs root - is **not** a blocker: leave it out of VERIFY, list
-it under CI_ONLY with the reason and the files it covers, and report ready. CI
-runs those. VERIFY itself must pass on its own; if a check would fail locally
-because of the environment, it does not belong in VERIFY.
+A browser, database or system library needed by a local test is a local
+prerequisite. Supply it in the allowed container environment or report blocked.
+Do not reclassify local failures as CI_ONLY. CI_ONLY is for checks that genuinely
+require deployment/production access or CI-specific infrastructure.
 
 VERIFY is run again later, against a tree whose dependencies have just changed,
 and against the files the build regenerates. So it must **build and test** the

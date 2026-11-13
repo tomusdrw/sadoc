@@ -167,6 +167,7 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
     )
     (tmp_path / "sandbox.ts").write_text((root / "extensions" / "sandbox.ts").read_text())
     (tmp_path / "run.ts").write_text((root / "tests" / "sandbox_policy.ts").read_text())
+    (tmp_path / "cache").mkdir()
 
     result = subprocess.run(
         [bun, "run", "run.ts"],
@@ -175,6 +176,8 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
             **os.environ,
             "SADOC_CONTAINER_POLICY": policy.policy_json(),
             "SADOC_WORKSPACE": str(tmp_path),
+            "SADOC_DISCOVERY": "1",
+            "SADOC_ALLOW_CONTAINERS": "0",
             "SADOC_CACHE_DIR": str(tmp_path / "cache"),
         },
         capture_output=True,
@@ -234,3 +237,65 @@ def test_the_container_helper_reaches_the_runtime_and_applies_the_policy(tmp_pat
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "container helper checks pass" in result.stdout
+
+
+def test_helper_tags_containers_and_bounds_runtime_calls(tmp_path):
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    bun = shutil.which("bun")
+    if not bun or not shutil.which("bwrap"):
+        pytest.skip("bun and bubblewrap required")
+    root = Path(__file__).resolve().parent.parent
+    # Unix socket paths must fit sockaddr_un, even with pytest's long test names.
+    with tempfile.TemporaryDirectory(prefix="sadoc-helper-") as directory:
+        work = Path(directory)
+        stub = work / "node_modules/@earendil-works/pi-coding-agent"
+        stub.mkdir(parents=True)
+        (stub / "package.json").write_text('{"type":"module","main":"index.js"}')
+        (stub / "index.js").write_text("export function createLocalBashOperations() {}")
+        (work / "sandbox.ts").write_text((root / "extensions/sandbox.ts").read_text())
+        (work / "run.ts").write_text((root / "tests/container_lifecycle.ts").read_text())
+        runtime = work / "podman"
+        runtime.write_text(
+            "#!/usr/bin/python\nimport json,os,sys,time\n"
+            "assert os.getpgrp() == int(os.environ['FAKE_EXPECTED_PGID'])\n"
+            'with open(os.environ["FAKE_RUNTIME_LOG"], "a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+            'if sys.argv[1] == "wait": time.sleep(30)\n'
+        )
+        runtime.chmod(0o755)
+        result = subprocess.run(
+            [bun, "run", "run.ts"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env={
+                **os.environ,
+                "PATH": f"{work}:" + os.environ["PATH"],
+                "SADOC_CONTAINER_RUNTIME": "podman",
+                "SADOC_SESSION_ID": "test-session",
+                "SADOC_CONTAINER_POLICY": policy.policy_json(),
+                "SADOC_ALLOW_CONTAINERS": "1",
+                "SADOC_CACHE_DIR": str(work / "cache"),
+                "SADOC_WORKSPACE": str(work),
+                "FAKE_RUNTIME_LOG": str(work / "runtime.log"),
+                "FAKE_EXPECTED_PGID": str(os.getpgrp()),
+            },
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_container_ownership_label_cannot_be_overridden():
+    assert violation("podman run --label io.sadoc.session=someone-else example.invalid/image")
+
+
+def test_docker_registry_is_not_the_docker_runtime():
+    assert (
+        policy.runtime_violation("podman run --rm docker.io/library/postgres:17-alpine", "podman")
+        is None
+    )
+    assert policy.runtime_violation("/usr/bin/docker run alpine", "podman") == "docker"

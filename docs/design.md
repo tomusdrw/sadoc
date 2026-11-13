@@ -282,6 +282,17 @@ the matcher evaluates every comparison rather than only the first.
 
 ## 11. Project discovery and recipe replay
 
+Discovery has a one-hour outer deadline, 15-minute shell limits and at most two
+executions of an identical failing shell command. RPC recipe replay retains its
+30-minute deadline. GNU `timeout` bounds sandbox execution and the external
+container helper, so a hung child cannot keep a command waiting indefinitely.
+Each session has its own helper socket and an orchestrator-owned container label.
+On close, even after forced pi termination, the orchestrator removes only that
+session's labeled containers and anonymous volumes. Image downloads remain cached;
+test databases must use fresh disposable state and the project's service versions.
+`repo_setup.diagnostics` retains bounded tool timings/output and active commands
+on success or failure, locally only. It is separate from user-facing recipe notes.
+
 `Worker.ensure_build_setup` runs before the dependency-editing session. Pi reads
 `prompts/prepare.md`, explores the checkout, and reports setup and verification
 commands plus unmet prerequisites and checks requiring CI. This is discovery of
