@@ -25,20 +25,20 @@ The sandbox bounds shell execution, while the orchestrator owns container cleanu
 ### Task 1: Diagnostics
 Files: sadoc/piworker.py, sadoc/pipeline.py, sadoc/state.py,
 tests/test_piworker.py, tests/test_build_setup.py.
-- [ ] Add failing tests for active-command timeout context, bounded output, migrated
+- [x] Add failing tests for active-command timeout context, bounded output, migrated
   and persisted diagnostics on discovery failures and successes.
-- [ ] Implement timestamped diagnostic JSON, store in repo_setup.diagnostics in
+- [x] Implement timestamped diagnostic JSON, store in repo_setup.diagnostics in
   discovery's finally block, and explain inspection in README.
-- [ ] Run pytest tests/test_piworker.py tests/test_build_setup.py.
+- [x] Run pytest tests/test_piworker.py tests/test_build_setup.py.
 
 ### Task 2: Execution and cleanup
 Files: extensions/sandbox.ts, sadoc/piworker.py, tests/test_container_policy.py,
 tests/test_piworker.py, tests/sandbox_policy.ts.
-- [ ] Add regression tests for command timeout, failed-command retry limit,
+- [x] Add regression tests for command timeout, failed-command retry limit,
   distinct session sockets, container tagging and cleanup after forced exit.
-- [ ] Implement limits on both tool and RPC paths, bounded helper execution,
+- [x] Implement limits on both tool and RPC paths, bounded helper execution,
   per-session helper locations, and orchestrator-owned labeled-container cleanup.
-- [ ] Run pytest tests/test_container_policy.py tests/test_piworker.py.
+- [x] Run pytest tests/test_container_policy.py tests/test_piworker.py.
 
 ### Task 3: Recipe guidance and verification
 Files: prompts/prepare.md, README.md, docs/design.md.
@@ -48,3 +48,16 @@ Files: prompts/prepare.md, README.md, docs/design.md.
   disabled; inspect recorded diagnostics and report any remaining blockers.
 - [ ] Run pytest and ruff check .; review the final diff and commit.
 - [ ] Push to origin/main without force; confirm remote HEAD and local HEAD agree.
+
+## Execution notes
+
+- The independent review found and prompted fixes for Docker-registry false
+  positives, helper process-group escape, global-option ownership bypass, parallel
+  retry accounting, user-message content shape, and RPC replay diagnostics.
+- Container ownership rules remain in sadoc.policy. Global runtime options and
+  overrides of the reserved session label are refused by the helper.
+- Integrated main's multiline recipe/one-repair change without discarding it. The
+  one-hour limit applies to initial discovery; repair retains its separate limit.
+- All 399 tests pass on Python 3.11, 3.12, 3.13 and 3.14; ruff check is clean.
+- Real PostgreSQL 17 startup, authenticated access across sandbox commands and
+  orchestrator cleanup passed. A full project discovery check is also being run.

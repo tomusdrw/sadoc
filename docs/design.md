@@ -282,7 +282,7 @@ the matcher evaluates every comparison rather than only the first.
 
 ## 11. Project discovery and recipe replay
 
-Discovery has a one-hour outer deadline, 15-minute shell limits and at most two
+Initial discovery has a one-hour deadline, 15-minute shell limits and at most two
 executions of an identical failing shell command. RPC recipe replay retains its
 30-minute deadline. GNU `timeout` bounds sandbox execution and the external
 container helper, so a hung child cannot keep a command waiting indefinitely.

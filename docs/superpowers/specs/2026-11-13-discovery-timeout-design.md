@@ -4,7 +4,7 @@ The failed website-creator run repeatedly tried an unresolved image name, reused
 incompatible PostgreSQL data, and spent most of an hour in unrecorded tool calls.
 The user authorized all fixes proposed in the investigation.
 
-Keep the one-hour discovery budget and independent clean-checkout replay. Bound
+Keep the one-hour initial discovery budget and independent clean-checkout replay. Bound
 individual discovery shell commands to 15 minutes and identical failed commands
 to two executions. Persist a bounded, timestamped local diagnostic record with
 commands, output tails, errors and the active command. Never accept partial reports.

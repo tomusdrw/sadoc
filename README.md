@@ -312,7 +312,7 @@ Discovery shell commands have a 15-minute limit; the same failing command may
 execute twice before further identical retries are blocked. Complete recipe replay
 has a separate 30-minute limit. Discovery retains a bounded local JSON diagnostic
 record (recent commands, timings, output tails, stderr, and unfinished tools) in
-`repo_setup.diagnostics`, including when the one-hour discovery limit expires.
+`repo_setup.diagnostics`, including when the one-hour initial discovery limit expires.
 Session-owned containers are removed on shutdown, including forced termination.
 Use fully qualified, project-pinned service images and disposable test databases;
 only downloads and images should be reused between runs.
