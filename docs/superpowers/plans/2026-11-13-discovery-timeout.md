@@ -42,12 +42,12 @@ tests/test_piworker.py, tests/sandbox_policy.ts.
 
 ### Task 3: Recipe guidance and verification
 Files: prompts/prepare.md, README.md, docs/design.md.
-- [ ] Correct cache/database/image guidance, readiness checks, retries, cleanup and
+- [x] Correct cache/database/image guidance, readiness checks, retries, cleanup and
   contradictory instructions about which checks belong in CI.
-- [ ] Attempt discovery on the disposable website-creator clone with notifications
+- [x] Attempt discovery on the disposable website-creator clone with notifications
   disabled; inspect recorded diagnostics and report any remaining blockers.
-- [ ] Run pytest and ruff check .; review the final diff and commit.
-- [ ] Push to origin/main without force; confirm remote HEAD and local HEAD agree.
+- [x] Run pytest and ruff check .; review the final diff and commit.
+- [x] Push to origin/main without force; confirm remote HEAD and local HEAD agree.
 
 ## Execution notes
 
@@ -60,4 +60,10 @@ Files: prompts/prepare.md, README.md, docs/design.md.
   one-hour limit applies to initial discovery; repair retains its separate limit.
 - All 399 tests pass on Python 3.11, 3.12, 3.13 and 3.14; ruff check is clean.
 - Real PostgreSQL 17 startup, authenticated access across sandbox commands and
-  orchestrator cleanup passed. A full project discovery check is also being run.
+  orchestrator cleanup passed. An isolated project discovery passed dependency installation, PostgreSQL 17
+  authentication, typechecking and web build. A separate browser preflight then
+  showed all required browser executables missing from the disposable HOME. The
+  long test shard was stopped and its containers cleaned; no passing recipe or
+  override was installed. Added persistent PLAYWRIGHT_BROWSERS_PATH and early
+  browser smoke-check guidance. Full project verification remains unproven until
+  browser installation/system-library prerequisites are supplied by discovery.

@@ -400,6 +400,7 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 		`export PIP_CACHE_DIR=${q(cache)}/pip`,
 		`export UV_CACHE_DIR=${q(cache)}/uv`,
 		`export BUN_INSTALL_CACHE_DIR=${q(cache)}/bun`,
+		`export PLAYWRIGHT_BROWSERS_PATH=${q(cache)}/ms-playwright`,
 		// The runtime the agent should use, so it does not have to guess.
 		...(ALLOW_CONTAINERS
 			? [

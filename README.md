@@ -315,7 +315,9 @@ record (recent commands, timings, output tails, stderr, and unfinished tools) in
 `repo_setup.diagnostics`, including when the one-hour initial discovery limit expires.
 Session-owned containers are removed on shutdown, including forced termination.
 Use fully qualified, project-pinned service images and disposable test databases;
-only downloads and images should be reused between runs.
+only downloads and images should be reused between runs. Browser downloads use
+`PLAYWRIGHT_BROWSERS_PATH` in the persistent tool cache; discovery must smoke-test
+required browser engines before long suites.
 
 For `agent_failed`, inspect `diagnostics` and the configured pi/model endpoint; for `blocked`, supply
 the reported local prerequisites. `baseline_failed` means a check failed before

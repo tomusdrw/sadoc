@@ -111,6 +111,10 @@ def test_rpc_bash_uses_the_sandbox_and_scrubs_credentials(tmp_path, monkeypatch)
         response = session.bash(f"printf escaped > {outside}", timeout=20)
         # /tmp is writable inside the sandbox, but must not touch the host.
         assert not outside.exists()
+        response = session.bash('printf "%s" "$PLAYWRIGHT_BROWSERS_PATH"', timeout=20)
+        assert response["data"]["output"] == str(
+            session._build_env()["SADOC_CACHE_DIR"] + "/ms-playwright"
+        )
         response = session.bash("git push", timeout=20)
         assert response["data"]["exitCode"] == 1
         assert "Blocked by sadoc policy" in response["data"]["output"]

@@ -27,6 +27,13 @@ Discovery has one hour total. Each shell command is capped at 15 minutes; use
 shorter timeouts for probes, service readiness and network requests. Repeating an
 identical failed command more than twice is blocked. Do not evade this with shell
 formatting changes: retry only after identifying and correcting the cause.
+Before long suites, run cheap prerequisite smoke checks: tool versions, an
+authenticated database query, and an actual launch/close of every required browser
+engine. Install the browser revisions pinned by the project's Playwright package
+into PLAYWRIGHT_BROWSERS_PATH (already set to the persistent cache). Missing browser
+executables need installation; missing system libraries need a compatible container
+image. Prove this before spending minutes on tests that cannot run. Keep browser
+package and container-image versions aligned; do not weaken browser sandboxing.
 Inspect the last output after a timeout. Split long suites using the project's
 supported test sharding, with an isolated database per shard. Never leave a timed
 out test running or start a replacement against its database. If you cannot prove
