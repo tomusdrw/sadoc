@@ -88,6 +88,207 @@ def test_setup_is_saved_and_replayed_in_the_verification_shell(project):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "export BUILD_MARKER=ready\nprintf generated > artifact",
+        "export BUILD_MARKER=ready\nif [ ! -f artifact ]; then\n  printf generated > artifact\nfi",
+        "export BUILD_MARKER=ready\nprintf \\\n  generated > artifact",
+        "export BUILD_MARKER=ready\n# Keep this newline.\nprintf generated > artifact",
+        "export BUILD_MARKER=ready\ncat > artifact <<'EOF'\n  generated\n\nEOF",
+        "export BUILD_MARKER=ready\ncat > artifact <<'EOF'\n```json\ncontent\n```\nEOF",
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_multiline_recipes_survive_discovery_and_cached_replay(project, setup, wrapped):
+    worker, git, session = project
+    verify = 'test "$BUILD_MARKER" = ready\ntest -s artifact\nprintf verified'
+    session.report = f"STATUS: ready\nSETUP: {setup}\nVERIFY: {verify}\nNOTES: checked"
+    if wrapped:
+        session.report = "```\n" + session.report + "\n```"
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    saved = worker.state.setup("alice/repo")
+    assert saved["setup_command"] == setup
+    assert saved["verify_command"] == verify
+    assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
+
+
+@pytest.mark.parametrize("padding", ["", "\n", " \n\n"])
+@pytest.mark.parametrize("closing_space", ["", "  "])
+def test_fenced_shell_preserves_heredoc_whitespace_and_report_like_content(
+    project, padding, closing_space
+):
+    worker, git, session = project
+    content = "  indented  \n\nNOTES: literal data\nVERIFY: also data\n```\n\twith tab\n"
+    setup = "cat > artifact <<'EOF'\n" + content + "EOF"
+    verify = "test -s artifact\nprintf verified"
+    session.report = (
+        f"STATUS: ready\nSETUP:\n{padding}````bash\n{setup}\n````{closing_space}\n"
+        f"VERIFY:\n```bash\n{verify}\n```\nNOTES: checked"
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert result["setup_command"] == setup
+    assert result["verify_command"] == verify
+    assert result["notes"] == "checked"
+    assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
+    assert (git.path / "artifact").read_text() == content
+
+
+def test_multiline_setup_failure_stops_verification(project):
+    worker, git, session = project
+    session.report = (
+        "STATUS: ready\nSETUP: export BUILD_MARKER=ready\nfalse\n"
+        "printf setup-after-failure\nVERIFY: printf verification-ran"
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "validation_failed"
+    assert "setup-after-failure" not in result["verify_output"]
+    assert "verification-ran" not in result["verify_output"]
+
+
+def test_public_report_prose_still_folds_continuation_lines(project):
+    worker, _, _ = project
+    assert worker._public_note("NOTES: Updated the library.\n  Checks passed.") == (
+        "Updated the library. Checks passed."
+    )
+
+
+def test_syntax_failure_does_not_execute_setup(project):
+    worker, git, session = project
+    marker = git.path.parent / "must-not-exist"
+    session.report = f"STATUS: ready\nSETUP: touch {marker}\nVERIFY: if then"
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "validation_failed"
+    assert "syntax error" in result["verify_output"]
+    assert not marker.exists()
+
+
+def test_unterminated_heredoc_cannot_swallow_verification(project):
+    worker, git, session = project
+    session.report = "STATUS: ready\nSETUP: cat > artifact <<'EOF'\ntext\nVERIFY: false"
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "validation_failed"
+    assert "here-document" in result["verify_output"]
+    assert worker.verify_command("alice/repo") is None
+
+
+def test_syntax_check_allows_extended_globs_enabled_by_setup(project):
+    worker, git, session = project
+    session.report = (
+        "STATUS: ready\nSETUP: shopt -s extglob\nprintf data > artifact\nVERIFY: cat +(artifact)"
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert "data" in result["verify_output"]
+
+
+@pytest.mark.parametrize(
+    "bad_setup",
+    ["if then", "export MARKER=value mkdir -p cache", "printf earlier > artifact"],
+)
+def test_failed_recipe_gets_one_repair_and_clean_replay(project, bad_setup):
+    worker, git, session = project
+    original = git.commit_sha()
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        if len(self.prompts) == 1:
+            return TurnResult(
+                text=f"STATUS: ready\nSETUP: {bad_setup}\nVERIFY: printf first-failure; false",
+                settled=True,
+            )
+        assert git.commit_sha() == original
+        assert not (git.path / "artifact").exists()
+        assert bad_setup in text
+        assert "exit " in text
+        # Exploration changes, even committed ones, cannot validate the repair.
+        (git.path / "shortcut").write_text("exploration")
+        git.stage_all()
+        git._run(
+            "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "edit"
+        )
+        return TurnResult(
+            text=REPORT.replace("SETUP: ", "SETUP: test ! -e shortcut && "), settled=True
+        )
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert len(session.prompts) == 2
+    assert "Attempt 1" in result["verify_output"]
+    assert "Attempt 2" in result["verify_output"]
+    assert git.commit_sha() == original
+    assert not (git.path / "shortcut").exists()
+    assert not (git.path / "artifact").exists()
+    assert worker.state.setup("alice/repo")["status"] == "ok"
+    assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
+
+
+def test_failed_repair_stops_and_is_memoized_with_both_errors(project):
+    worker, git, session = project
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        return TurnResult(
+            text=f"STATUS: ready\nVERIFY: printf failure-{len(self.prompts)}; false", settled=True
+        )
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "validation_failed"
+    assert "failure-1" in result["verify_output"]
+    assert "failure-2" in result["verify_output"]
+    assert "failure-2" in result["notes"]
+    assert worker.ensure_build_setup("alice", "repo", "main", git) == result
+    assert len(session.prompts) == 2
+    assert len(session.commands) == 4  # syntax and execution for each attempt
+    assert worker.verify_command("alice/repo") is None
+
+
+@pytest.mark.parametrize(
+    ("replacement", "status", "reason"),
+    [
+        ("STATUS: blocked\nVERIFY: NONE\nNOTES: missing tool", "blocked", "missing tool"),
+        ("STATUS: baseline_failed\nNOTES: source broken", "baseline_failed", "source broken"),
+        ("STATUS: ready\nNOTES: no command", "invalid_report", "VERIFY"),
+        ('STATUS: ready\nVERIFY: true\nINPUTS: ["../bad"]', "invalid_report", "INPUTS"),
+        (PiError("repair timed out"), "agent_failed", "repair timed out"),
+    ],
+)
+def test_unusable_repair_retains_original_failure(project, replacement, status, reason):
+    worker, git, session = project
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        if len(self.prompts) == 1:
+            return TurnResult(
+                text="STATUS: ready\nVERIFY: printf original-failure; false", settled=True
+            )
+        if isinstance(replacement, Exception):
+            raise replacement
+        return TurnResult(text=replacement, settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == status
+    assert reason in result["notes"]
+    assert "original-failure" in result["verify_output"]
+    assert len(session.prompts) == 2
+    assert len(session.commands) == 2  # initial syntax and execution; no repair replay
+    assert worker.verify_command("alice/repo") is None
+
+
+def test_unclosed_shell_fence_is_an_invalid_report(project):
+    worker, git, session = project
+    session.report = "STATUS: ready\nVERIFY:\n```bash\nprintf should-not-run"
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "invalid_report"
+    assert "Unclosed shell block" in result["notes"]
+    assert not session.commands
+
+
 def test_a_recipe_that_stops_working_is_thrown_away(project):
     """A cached recipe that fails must not be trusted for ever."""
     worker, git, session = project
@@ -137,6 +338,20 @@ def test_cache_reused_across_workers_but_refreshed_when_tree_changes(project):
     git.stage_all()
     git._run("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "change")
     assert second.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
+    assert len(session.prompts) == 2
+
+
+def test_pre_multiline_validation_cache_is_rediscovered(project):
+    worker, git, session = project
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok"
+    old_fingerprint = "recipe-v3:" + result["fingerprint"].split(":", 1)[1]
+    worker.state.conn.execute(
+        "UPDATE repo_setup SET fingerprint=? WHERE repo=?", (old_fingerprint, "alice/repo")
+    )
+    worker.state.conn.commit()
+    next_run = Worker(worker.cfg, worker.gh, worker.state)
+    assert next_run.ensure_build_setup("alice", "repo", "main", git)["status"] == "ok"
     assert len(session.prompts) == 2
 
 
@@ -246,7 +461,7 @@ def test_pipeline_uses_the_qualified_recipe(project):
     result = worker.process_repo("alice", "repo", "A", [], dry_run=True)
     assert result.status == "skipped"
     assert "would open PR" in result.detail
-    assert len(session.commands) == 2  # clean baseline replay, then updated-tree verification
+    assert len(session.commands) == 3  # syntax, clean baseline replay, updated-tree verification
     assert worker.state.setup("alice/repo")["status"] == "ok"
 
 

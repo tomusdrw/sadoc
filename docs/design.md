@@ -288,6 +288,11 @@ commands plus unmet prerequisites and checks requiring CI. This is discovery of
 the project's existing process, not permission to pick dependency versions,
 repair source, skip failing local tests, or run production operations.
 
+SETUP and VERIFY are shell programs, not prose: their newlines, indentation and
+continuations are preserved. Optional fenced bash blocks protect heredocs whose
+contents resemble report headers; use a longer fence when the content includes
+backticks. Prose fields continue to fold continuation lines into spaces.
+
 The recipe is evidence only after independent replay. Discovery saves the
 original commit, resets to it, removes ignored artifacts and nested fixture
 clones, and deinitializes submodules before executing the commands. Final cleanup
@@ -296,6 +301,20 @@ destructive and must only be used on the orchestrator's disposable clone. Normal
 cleanup retains its less aggressive behavior. Errors during final cleanup are
 recorded alongside the primary error, and prevent a successful recipe from being
 used; they must not erase the agent's actual failure or bypass SQLite recording.
+
+Before replay, the combined script is checked with `bash -n` inside the sandbox.
+Syntax diagnostics, including unterminated-heredoc warnings that Bash reports
+with a zero exit code, prevent execution. This does not detect semantic errors
+such as invalid export arguments or wrong script names; real replay still decides
+whether the recipe works.
+
+A failed syntax check or replay gets at most one repair in the discovery session,
+with the exact failed commands and diagnostic output. Reset to the original tree
+before requesting repair and again before validating its complete replacement
+report. The repair must not change source or weaken checks. Explicit blocked or
+baseline-failed reports stop immediately. `verify_output` retains both attempts,
+including the first failure if repair produces an invalid report or an agent error.
+Only successful replay and cleanup make the replacement eligible for caching.
 
 SETUP and VERIFY run in one bash shell so exports and directory changes carry
 through. Failures in setup must stop verification, including failed `&&` lists
@@ -311,7 +330,7 @@ settled final result rather than rejecting the first failed attempt. Truncation,
 empty replies and timeouts must remain actionable errors, not `VERIFY: NONE`.
 
 `repo_setup` stores recipes under `owner/repository`. `buildcache.py` computes a
-`recipe-v3` fingerprint from committed input paths, file modes and content, plus
+`recipe-v4` fingerprint from committed input paths, file modes and content, plus
 the sandbox network policy. It always includes conventional manifests,
 lockfiles, toolchain/hidden configuration, CI, README/contributor documentation,
 shell scripts, and scripts/tools/config directories. Enumerating the current tree
@@ -364,6 +383,10 @@ Explicit `verify` overrides bypass discovery but still run in the sandbox.
 Owner-qualified config keys win over legacy short-name keys. Automatic discovery
 and its diagnostics remain local; a recipe's CI-only coverage is not a claim that
 those checks passed.
+
+Version 4 invalidates recipes validated before lossless shell parsing and syntax
+checks: the previous parser could flatten commands or swallow verification into
+a heredoc and incorrectly cache success. Those recipes must be rediscovered once.
 
 Regression coverage lives in `tests/test_build_setup.py`, with real temporary Git
 repositories and SQLite but a substituted pi process. `tests/test_piworker.py`

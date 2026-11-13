@@ -438,4 +438,4 @@ def fingerprint(
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "recipe-v3:" + hashlib.sha256(payload.encode()).hexdigest()
+    return "recipe-v4:" + hashlib.sha256(payload.encode()).hexdigest()

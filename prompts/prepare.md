@@ -97,7 +97,11 @@ absolute paths, generated artifacts, or paths outside the repository.
 
 ## Report
 
-Return exactly these fields with each command on a single line (no Markdown):
+Return exactly these fields. SETUP and VERIFY may contain multiple shell lines:
+newlines separate commands and are preserved, along with indentation. Do not
+flatten commands into a space-separated list. Use real command names copied from
+the project's scripts (punctuation is significant), correctly spaced shell tests
+such as `[ ! -x "$tool" ]`, and consistent service credentials and connection URLs.
 
 STATUS: ready | blocked | baseline_failed
 SETUP: <reproducible setup shell commands, or NONE>
@@ -106,6 +110,25 @@ PREREQUISITES: <unmet local requirements, or NONE>
 CI_ONLY: <checks that require CI/production access and why, or NONE>
 INPUTS: <JSON array of additional tracked recipe files/directories, or []>
 NOTES: <what was verified, or the specific failure and what is needed>
+
+Prefer fenced bash blocks for SETUP and VERIFY, especially for heredocs whose
+contents could look like report fields. For example:
+
+SETUP:
+```bash
+export PATH="$SADOC_TOOL_CACHE/node/bin:$PATH"
+corepack prepare yarn@4.9.2 --activate
+yarn install --immutable
+```
+VERIFY:
+```bash
+yarn build
+yarn test
+```
+
+The commands above only demonstrate formatting; use this project's actual pinned
+tools and checks. Choose a longer fence if the shell content contains triple
+backticks. Keep the other report fields outside shell blocks.
 
 Use ready when every check that can run locally has passed. Use blocked only when a
 check that *can* run locally cannot be run, or does not pass. Use baseline_failed

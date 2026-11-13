@@ -242,7 +242,7 @@ def test_application_source_does_not_change_the_recipe(repo):
 
 def test_the_fingerprint_has_a_version_of_its_own(repo):
     repo.write({"package.json": json.dumps(PACKAGE_JSON)})
-    assert fingerprint(repo).startswith("recipe-v3:")
+    assert fingerprint(repo).startswith("recipe-v4:")
 
 
 def test_the_sandbox_policy_is_part_of_the_fingerprint(repo):
