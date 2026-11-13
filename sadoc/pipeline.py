@@ -501,7 +501,15 @@ class Worker:
         return _execute_recipe(session, cmd)
 
     # --------------------------------------------------------------- PR
-    def pr_body(self, updates: list[Update], repo: str, tier: str, note: str, ref_id: str) -> str:
+    def pr_body(
+        self,
+        updates: list[Update],
+        repo: str,
+        tier: str,
+        note: str,
+        ref_id: str,
+        impact: str | None = None,
+    ) -> str:
         """A pull request body that reads like a normal dependency update.
 
         Nothing about the tooling goes in here - the model, the transcript and
@@ -516,6 +524,21 @@ class Worker:
         lines.append("")
         if note:
             lines += [note.strip(), ""]
+        if impact is not None:
+            original = impact.strip()
+            public_impact = sanitize.scrub_text(original)
+            if (
+                not public_impact
+                or public_impact.upper() == "NONE"
+                or sanitize.contains_leak(original)
+                or sanitize.contains_leak(public_impact)
+            ):
+                public_impact = (
+                    "The changelog-based impact assessment is unavailable. "
+                    "Review the upstream migration guidance and affected code before merging; "
+                    "passing checks alone do not establish compatibility."
+                )
+            lines += ["## Major-version impact (before changes)", "", public_impact, ""]
         if tier == TIER_B:
             lines += [
                 "> These updates include major version changes and may require code adjustments.",
@@ -892,6 +915,7 @@ class Worker:
         default_branch = self.gh.default_branch(owner, repo)
         branch = self.branch_name(repo, tier, group)
         updates = group.updates if group else updates
+        breaking_updates = [u for u in updates if u.bump_kind == "major"]
 
         attempt_id = self.state.start_attempt(f"{owner}/{repo}", f"tier_{tier.lower()}")
         self.state.log(
@@ -929,7 +953,7 @@ class Worker:
             git.create_branch(branch)
             result.changes = []
 
-            model = self.cfg.model_for("migrate" if tier == TIER_B else "bump")
+            model = self.cfg.model_for("migrate" if breaking_updates else "bump")
             spec = PiModel(
                 name=f"depsbot-{model.provider}",
                 base_url=model.base_url,
@@ -950,6 +974,25 @@ class Worker:
             )
             try:
                 session.start()
+                # --- assess breaking changes before touching the code ------
+                impact = None
+                if breaking_updates:
+                    assessment_head = git.commit_sha()
+                    assessment = session.prompt(
+                        load_prompt(
+                            "impact",
+                            UPDATES=render_updates(breaking_updates),
+                            NETWORK="enabled" if self.cfg.allow_network else "disabled",
+                        )
+                    )
+                    impact = assessment.text.strip()
+                    self.state.log(
+                        "major-update impact assessment", repo=result.repo, data={"impact": impact}
+                    )
+                    if git.commit_sha() != assessment_head or git.changed_files():
+                        raise PiError(
+                            "impact assessment modified the checkout; refusing to continue"
+                        )
                 # --- bump -------------------------------------------------
                 bump_prompt = load_prompt(
                     "bump",
@@ -957,6 +1000,7 @@ class Worker:
                     MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
                 )
                 bump = session.prompt(bump_prompt)
+                work_notes = bump.text
                 self.state.log(f"bump done: {bump.text[:400]}", repo=f"{owner}/{repo}")
                 result.changes = git.changed_files()
                 if not result.changes:
@@ -988,8 +1032,10 @@ class Worker:
                         "migrate",
                         UPDATES=render_update_list(updates),
                         ERROR=output[-15000:],
+                        IMPACT=impact or "No pre-update assessment available.",
                     )
                     mig = session.prompt(migrate_prompt)
+                    work_notes += "\n\nMigration:\n" + mig.text
                     self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
                     ok, output = self.run_verify(git, result.repo, session)
                 if not ok:
@@ -1033,7 +1079,7 @@ class Worker:
                     note_prompt = load_prompt(
                         "prnote",
                         UPDATES=render_update_list(updates),
-                        WORK=sanitize.scrub_text(bump.text)[:4000],
+                        WORK=sanitize.scrub_text(work_notes)[:8000],
                     )
                     note_result = session.prompt(note_prompt, timeout=900)
                     raw_note = note_result.text.strip()
@@ -1061,7 +1107,7 @@ class Worker:
                 # --- open PR --------------------------------------------
                 ref_id = _make_ref_id()
                 title = PR_TITLES[tier].format(n=len(updates))
-                body = self.pr_body(updates, f"{owner}/{repo}", tier, public_note, ref_id)
+                body = self.pr_body(updates, f"{owner}/{repo}", tier, public_note, ref_id, impact)
                 pr = self.gh.open_pr(owner, repo, title, body, branch, default_branch)
                 url = pr.get("url", "")
                 number = self._pr_number(url)
@@ -1083,11 +1129,12 @@ class Worker:
                     number or 0,
                     ref_id=ref_id,
                     tier=tier,
-                    model=self.cfg.model_for("migrate" if tier == TIER_B else "bump").model,
-                    base_url=self.cfg.model_for("migrate" if tier == TIER_B else "bump").base_url,
+                    model=model.model,
+                    base_url=model.base_url,
                     branch=branch,
                     updates=json.dumps([u.as_dict() for u in updates]),
-                    agent_notes=bump.text,
+                    agent_notes=(f"Pre-update impact:\n{impact}\n\n" if impact is not None else "")
+                    + work_notes,
                     verify_output=output[-20000:],
                     transcript=json.dumps(session.transcript[-200:])[-40000:],
                 )

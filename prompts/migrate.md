@@ -8,6 +8,13 @@ The dependency versions in this repository were just updated:
 
 The project now fails to build or the tests fail. The error output is below.
 
+## Pre-update impact assessment
+
+{{IMPACT}}
+
+Use these findings as context for the repair. Confirm them against the current
+code and failure output; they describe risks before the edits, not completed work.
+
 ## Failure output
 
 ```

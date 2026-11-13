@@ -184,7 +184,7 @@ without producing conflicting branches.
 ## 6. The green loop
 
 ```
-bump → verify locally → (fail) migrate → verify → push → watch CI
+assess breaking updates → bump → verify locally → (fail) migrate → verify → push → watch CI
                                                    → (fail) fixci → watch CI
                                                    → green → maybe auto-merge
 ```
@@ -192,6 +192,21 @@ bump → verify locally → (fail) migrate → verify → push → watch CI
 Running the test suite **locally** first is what makes this affordable: it is a
 fast loop that does not consume CI minutes, and it gives the model a precise error
 instead of a CI log.
+
+Before editing a breaking update, the same sandboxed session inspects official
+changelogs and migration guides for the exact current-to-target range, including
+intermediate breaking releases, then traces affected usages in the repository.
+This also applies to breaking 0.x updates and major updates in security groups.
+Ordinary patch/minor updates skip the assessment. It is read-only; version choices,
+credentials, and auto-merge policy remain with the orchestrator.
+
+The PR includes a separate **Major-version impact (before changes)** section with
+source links, affected files/symbols, migration needs, and validation gaps. This is
+retained even when tests pass. Subsequent migration fixes are described separately
+in the work summary. Missing sources or incomplete coverage must be explicit;
+unusable or unsafe public findings produce an assessment-unavailable notice.
+Session errors, including an empty response, stop the attempt before editing. Raw findings remain in local
+PR details and logs. Network-disabled runs use local evidence and disclose gaps.
 
 When CI still fails, the failed step logs are fetched with `gh run view
 --log-failed` and handed to the model, which can see the real compiler output.
@@ -206,6 +221,7 @@ pull request therefore contains:
 
 - a table of the updated packages;
 - an optional short note explaining what had to change in the project's own code;
+- for breaking updates, a sanitized changelog-based impact assessment;
 - a small `<sub>ref 8f2a1c3d</sub>` reference id.
 
 Everything else — which model, the transcript, the verification output, the
