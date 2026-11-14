@@ -12,6 +12,7 @@ import sandbox, { buildSandbox, policyReason, containerReason } from "./sandbox.
 
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
 
@@ -121,6 +122,55 @@ await handlers.before_agent_start({messageType: "custom"});
 assert.deepEqual(activeTools, []);
 await handlers.before_agent_start({messageType: "user", prompt: "Repair the recipe"});
 assert.deepEqual(activeTools, ["bash", "read", "write", "edit"]);
+
+// Assessment tools must not mutate files, including through shell redirection,
+// Git metadata, or the helper that runs containers outside bubblewrap.
+writeFileSync(`${WORKSPACE}/baseline.txt`, "original");
+mkdirSync(`${WORKSPACE}/.git`, {recursive: true});
+writeFileSync(`${WORKSPACE}/.git/HEAD`, "original-head");
+await handlers.before_agent_start({messageType: "user", prompt: "[SADOC_READ_ONLY]\nAssess impact"});
+assert.deepEqual(activeTools, ["bash", "read"]);
+for (const toolName of ["write", "edit", "codemode"]) {
+    assert.equal((await handlers.tool_call({toolName, input: {path: "baseline.txt"}})).block, true);
+}
+assert.equal(await handlers.tool_call({toolName: "read", input: {path: "baseline.txt"}}), undefined);
+assert.ok(containerReason(["run", "--rm", "-v", ".:/w", "alpine", "touch", "/w/new.txt"]));
+for (const command of ["echo changed > baseline.txt", "touch new.txt", "echo changed > .git/HEAD"]) {
+    const event = {toolName: "bash", input: {command}};
+    assert.equal(await handlers.tool_call(event), undefined);
+    const result = spawnSync("bash", ["-c", event.input.command], {encoding: "utf8", timeout: 5000});
+    assert.notEqual(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Read-only file system/);
+}
+assert.equal(readFileSync(`${WORKSPACE}/baseline.txt`, "utf8"), "original");
+assert.equal(readFileSync(`${WORKSPACE}/.git/HEAD`, "utf8"), "original-head");
+assert.equal(existsSync(`${WORKSPACE}/new.txt`), false);
+const readEvent = {toolName: "bash", input: {command: "cat baseline.txt > /tmp/evidence; cat /tmp/evidence"}};
+await handlers.tool_call(readEvent);
+const evidence = spawnSync("bash", ["-c", readEvent.input.command], {encoding: "utf8", timeout: 5000});
+assert.equal(evidence.status, 0, evidence.stderr);
+assert.equal(evidence.stdout, "original");
+const rpcCommand = "echo changed > baseline.txt";
+const rpc = await handlers.user_bash({command: rpcCommand});
+const rpcResult = await rpc.operations.exec(rpcCommand, WORKSPACE, {});
+assert.notEqual(rpcResult.exitCode, 0);
+assert.match(rpcResult.output, /Read-only file system/);
+assert.equal(readFileSync(`${WORKSPACE}/baseline.txt`, "utf8"), "original");
+await handlers.before_agent_start({messageType: "custom"});
+assert.deepEqual(activeTools, ["bash", "read"]);
+// Moving between restricted modes must retain the original tool set.
+await handlers.before_agent_start({messageType: "user", prompt: "[SADOC_REPORT_ONLY]\nFormat"});
+assert.deepEqual(activeTools, []);
+await handlers.before_agent_start({messageType: "user", prompt: "[SADOC_READ_ONLY]\nAssess again"});
+assert.deepEqual(activeTools, ["bash", "read"]);
+await handlers.before_agent_start({messageType: "user", prompt: "Apply updates"});
+assert.deepEqual(activeTools, ["bash", "read", "write", "edit"]);
+assert.equal(containerReason(["run", "--rm", "alpine", "true"]), null);
+const editEvent = {toolName: "bash", input: {command: "echo updated > baseline.txt"}};
+await handlers.tool_call(editEvent);
+const edited = spawnSync("bash", ["-c", editEvent.input.command], {encoding: "utf8", timeout: 5000});
+assert.equal(edited.status, 0, edited.stderr);
+assert.equal(readFileSync(`${WORKSPACE}/baseline.txt`, "utf8"), "updated\n");
 for (let i = 0; i < 2; i++) {
     const event = {toolName: "bash", toolCallId: `failed-${i}`, input: {command: "make test", timeout: 99999}};
     assert.equal(await handlers.tool_call(event), undefined);

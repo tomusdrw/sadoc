@@ -91,7 +91,10 @@ def test_successful_retry_can_recover_provider_error(tmp_path):
     assert session.prompt("discover").text == "VERIFY: make check"
 
 
-def test_report_only_prompt_uses_the_extension_marker(tmp_path):
+@pytest.mark.parametrize(
+    "mode,marker", [("report_only", "SADOC_REPORT_ONLY"), ("read_only", "SADOC_READ_ONLY")]
+)
+def test_restricted_prompt_uses_the_extension_marker(tmp_path, mode, marker):
     import json
 
     session = session_with_events(
@@ -106,9 +109,9 @@ def test_report_only_prompt_uses_the_extension_marker(tmp_path):
         },
         {"type": "agent_settled"},
     )
-    assert session.prompt("Reformat", timeout=120, report_only=True).text == "STATUS: blocked"
+    assert session.prompt("Reformat", timeout=120, **{mode: True}).text == "STATUS: blocked"
     payload = json.loads(session._proc.stdin.write.call_args.args[0])
-    assert payload["message"] == "[SADOC_REPORT_ONLY]\nReformat"
+    assert payload["message"] == f"[{marker}]\nReformat"
 
 
 def test_rpc_bash_uses_the_sandbox_and_scrubs_credentials(tmp_path, monkeypatch):

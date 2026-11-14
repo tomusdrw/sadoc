@@ -1,9 +1,13 @@
-import { buildSandbox, startContainerHelper } from './sandbox.ts';
+import sandbox, { buildSandbox } from './sandbox.ts';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
-startContainerHelper();
+const handlers: Record<string, Function> = {};
+sandbox({on(name: string, handler: Function) { handlers[name] = handler; },
+    getActiveTools() { return ["bash", "read", "write", "edit"]; },
+    setActiveTools() {},
+} as any);
 async function run(command: string, seconds = 10) {
     return await new Promise<{code: number, output: string}>(resolve => {
         const proc = spawn('bash', ['-c', buildSandbox(command, process.cwd(), seconds)]);
@@ -38,6 +42,13 @@ const calls = readFileSync(process.env.FAKE_RUNTIME_LOG!, 'utf8').trim().split('
 assert.equal(calls.length, 6);
 assert.ok(calls[2].includes(`${process.env.SADOC_WORKSPACE}:/w:rw`));
 for (const call of calls) assert.ok(call.includes(`io.sadoc.session=${process.env.SADOC_SESSION_ID}`));
+// Even a direct shim request must be refused by the helper during assessment.
+await handlers.before_agent_start({messageType: "user", prompt: "[SADOC_READ_ONLY]\nAssess"});
+const blocked = await run('podman run -v "$SADOC_WORKSPACE:/w" example.invalid/image touch /w/unexpected');
+assert.notEqual(blocked.code, 0, blocked.output);
+assert.match(blocked.output, /read-only assessment/);
+assert.equal(readFileSync(process.env.FAKE_RUNTIME_LOG!, 'utf8').trim().split('\n').length, 6);
+await handlers.before_agent_start({messageType: "user", prompt: "Apply"});
 // A helper command also terminates independently of the sandbox process.
 const timeout = await run('podman wait forever', 0.2);
 assert.equal(timeout.code, 124, timeout.output);

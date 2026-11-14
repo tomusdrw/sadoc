@@ -199,6 +199,12 @@ intermediate breaking releases, then traces affected usages in the repository.
 This also applies to breaking 0.x updates and major updates in security groups.
 Ordinary patch/minor updates skip the assessment. It is read-only; version choices,
 credentials, and auto-merge policy remain with the orchestrator.
+During assessment the extension exposes only reading/search and sandboxed shell
+tools, mounts the checkout (including `.git`) read-only, and refuses container
+helper requests. Shell commands may use temporary scratch space for evidence.
+The next bump turn restores normal editing access. A post-assessment HEAD and
+dirty-file check still fails closed, recording the changed paths and commits
+locally if the invariant is violated.
 
 The PR includes a separate **Major-version impact (before changes)** section with
 source links, affected files/symbols, migration needs, and validation gaps. This is

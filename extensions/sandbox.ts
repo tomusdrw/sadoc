@@ -6,7 +6,8 @@
  * Guarantees:
  *  1. Every shell command runs inside bubblewrap:
  *       - no network (--unshare-net) unless SADOC_ALLOW_NET=1
- *       - the workspace is read-write, the rest of / is read-only
+ *       - the workspace is read-only during assessment, otherwise read-write
+ *       - the rest of / is read-only
  *       - /tmp and tool caches are writable (HOME is redirected to a scratch dir)
  *  2. The agent can never mutate remote state. git push / gh pr create / gh api
  *     writes / sudo / systemctl are blocked outright - the orchestrator owns those.
@@ -39,6 +40,10 @@ const DISCOVERY = process.env.SADOC_DISCOVERY === "1";
 const COMMAND_TIMEOUT = DISCOVERY ? 900 : 1800;
 const SESSION_ID = process.env.SADOC_SESSION_ID || String(process.pid);
 const SHELL_TOOLS = new Set(["bash", "shell"]);
+const READ_ONLY_TOOLS = new Set(["bash", "shell", "read", "grep", "find", "ls"]);
+// Shared with the container helper: it runs outside bubblewrap and must not
+// allow a writable workspace mount to bypass an assessment's read-only bind.
+let readOnly = false;
 
 // Where the container helper keeps its socket, its images and the shim that
 // the sandbox sees in place of the runtime.
@@ -234,6 +239,7 @@ if __name__ == "__main__":
 
 /** The reason a runtime invocation is not allowed, or null if it is fine. */
 export function containerReason(argv: string | string[]): string | null {
+	if (readOnly) return "Containers are disabled during read-only assessment";
 	const command = Array.isArray(argv) ? argv.join(" ") : argv;
 	for (const [pattern, label] of CONTAINER_FORBIDDEN) {
 		if (pattern.test(command)) {
@@ -458,8 +464,9 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 		"--tmpfs /tmp",
 		`--dir ${q(scratch)}`,
 		`--dir ${q(cache)}`,
-		`--bind ${q(WORKSPACE)} ${q(WORKSPACE)}`,
 		`--bind ${q(cache)} ${q(cache)}`,
+		// Bind the workspace last so a cache inside it cannot reopen writes.
+		`${readOnly ? "--ro-bind" : "--bind"} ${q(WORKSPACE)} ${q(WORKSPACE)}`,
 		// Explicit chdir: without it bubblewrap may fall back to $HOME, which
 		// would put the agent in the scratch dir and lose repo writes.
 		`--chdir ${q(WORKSPACE)}`,
@@ -475,18 +482,21 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 
 export default function (pi: ExtensionAPI) {
 	let reportOnly = false;
-	let toolsBeforeReport: string[] = [];
+	let toolsBeforeRestriction: string[] = [];
 	pi.on("before_agent_start", (event: any) => {
-		// Custom continuations/retries must not re-enable tools during formatting.
+		// Custom continuations/retries must not lift a turn's restrictions.
 		if (event.messageType !== "user") return;
-		const next = String(event.prompt ?? "").startsWith("[SADOC_REPORT_ONLY]\n");
-		if (next && !reportOnly) {
-			toolsBeforeReport = pi.getActiveTools();
-			pi.setActiveTools([]);
-		} else if (!next && reportOnly) {
-			pi.setActiveTools(toolsBeforeReport);
+		const prompt = String(event.prompt ?? "");
+		const nextReport = prompt.startsWith("[SADOC_REPORT_ONLY]\n");
+		const nextReadOnly = prompt.startsWith("[SADOC_READ_ONLY]\n");
+		if (!reportOnly && !readOnly && (nextReport || nextReadOnly)) {
+			toolsBeforeRestriction = pi.getActiveTools();
 		}
-		reportOnly = next;
+		if (nextReport) pi.setActiveTools([]);
+		else if (nextReadOnly) pi.setActiveTools(toolsBeforeRestriction.filter(name => READ_ONLY_TOOLS.has(name)));
+		else if (reportOnly || readOnly) pi.setActiveTools(toolsBeforeRestriction);
+		reportOnly = nextReport;
+		readOnly = nextReadOnly;
 	});
 	const failures = new Map<string, number>();
 	const commands = new Map<string, string>();
@@ -524,6 +534,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event: any) => {
 		if (reportOnly) {
 			return { block: true, reason: "Report formatting only: return the complete report without tools." };
+		}
+		if (readOnly && !READ_ONLY_TOOLS.has(event.toolName)) {
+			return { block: true, reason: "Read-only assessment: inspect sources without modifying the checkout." };
 		}
 		if (SHELL_TOOLS.has(event.toolName)) {
 			const command = String(event.input.command ?? "");

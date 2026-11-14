@@ -1022,15 +1022,34 @@ class Worker:
                             "impact",
                             UPDATES=render_updates(breaking_updates),
                             NETWORK="enabled" if self.cfg.allow_network else "disabled",
-                        )
+                        ),
+                        read_only=True,
                     )
                     impact = assessment.text.strip()
                     self.state.log(
                         "major-update impact assessment", repo=result.repo, data={"impact": impact}
                     )
-                    if git.commit_sha() != assessment_head or git.changed_files():
+                    assessed_head = git.commit_sha()
+                    assessment_changes = git.changed_files()
+                    if assessed_head != assessment_head or assessment_changes:
+                        self.state.log(
+                            "impact assessment checkout violation",
+                            repo=result.repo,
+                            level="error",
+                            data={
+                                "before_head": assessment_head,
+                                "after_head": assessed_head,
+                                "changed_files": assessment_changes,
+                            },
+                        )
+                        detail = ", ".join(assessment_changes[:20])[:1000]
+                        if assessed_head != assessment_head:
+                            detail = (
+                                f"HEAD changed from {assessment_head} to {assessed_head}; {detail}"
+                            )
                         raise PiError(
-                            "impact assessment modified the checkout; refusing to continue"
+                            "impact assessment modified the checkout; refusing to continue: "
+                            + detail
                         )
                 # --- bump -------------------------------------------------
                 bump_prompt = load_prompt(

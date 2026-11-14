@@ -1,5 +1,8 @@
 Assess the impact of the specified breaking dependency updates on this codebase.
 This is a read-only assessment of the code BEFORE the updates are applied.
+The checkout is mounted read-only; editing tools and containers are unavailable.
+Use /tmp for temporary evidence within a single shell command (it is discarded
+between commands). Return the assessment in your reply, not in a repository file.
 
 ## Breaking updates to assess
 

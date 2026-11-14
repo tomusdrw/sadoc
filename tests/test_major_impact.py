@@ -77,6 +77,7 @@ def project(tmp_path, monkeypatch):
             if "## Breaking updates to assess" in text:
                 self.events.append("impact")
                 self.prompts["impact"] = text
+                self.prompts["impact_read_only"] = kwargs.get("read_only", False)
                 assert not git.changed_files()
                 if isinstance(self.report, Exception):
                     raise self.report
@@ -84,6 +85,7 @@ def project(tmp_path, monkeypatch):
                     (root / "unexpected.txt").write_text("not an assessment")
                 return TurnResult(text=self.report, settled=True)
             if "## Updates to apply" in text:
+                assert not kwargs.get("read_only")
                 self.events.append("bump")
                 (root / "package.json").write_text(
                     json.dumps({"dependencies": {u.name: f"^{u.latest}" for u in self.updates}})
@@ -129,6 +131,7 @@ def test_breaking_updates_are_assessed_before_bump_and_published(project, tier, 
 
     assert result.status == "pr_opened", result.detail
     assert project.session.events == ["impact", "bump", "prnote"]
+    assert project.session.prompts["impact_read_only"] is True
     body = project.gh.open_pr.call_args.args[3]
     assert ASSESSMENT.strip() in body
     assert "before changes" in body.lower()
@@ -193,6 +196,7 @@ def test_assessment_cannot_smuggle_edits_into_the_update(project):
     result = project.run("B", [update()])
     assert result.status == "failed"
     assert "assessment modified" in result.detail
+    assert "unexpected.txt" in result.detail
     assert project.session.events == ["impact"]
     project.gh.open_pr.assert_not_called()
     project.git.push.assert_not_called()

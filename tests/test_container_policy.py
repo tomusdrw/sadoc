@@ -162,8 +162,10 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
         ' "type": "module", "main": "index.js"}'
     )
     (stub / "index.js").write_text(
-        "export function createLocalBashOperations() { return { exec: async () =>"
-        " ({ output: '', exitCode: 0 }) }; }\n"
+        "import { spawnSync } from 'node:child_process';\n"
+        "export function createLocalBashOperations() { return { exec: async (command, cwd) => {"
+        " const p = spawnSync('bash', ['-c', command], {cwd, encoding: 'utf8', timeout: 5000});"
+        " return { output: p.stdout + p.stderr, exitCode: p.status }; } }; }\n"
     )
     (tmp_path / "sandbox.ts").write_text((root / "extensions" / "sandbox.ts").read_text())
     (tmp_path / "run.ts").write_text((root / "tests" / "sandbox_policy.ts").read_text())

@@ -376,13 +376,20 @@ class PiSession:
 
     # ------------------------------------------------------------ prompt
     def prompt(
-        self, message: str, timeout: int | None = None, *, report_only: bool = False
+        self,
+        message: str,
+        timeout: int | None = None,
+        *,
+        report_only: bool = False,
+        read_only: bool = False,
     ) -> TurnResult:
         """Send a prompt and collect the turn's events until the agent settles."""
         result = TurnResult()
         started = time.monotonic()
         if report_only:
             message = "[SADOC_REPORT_ONLY]\n" + message
+        elif read_only:
+            message = "[SADOC_READ_ONLY]\n" + message
         req_id = self._next_id()
         self._send({"id": req_id, "type": "prompt", "message": message})
 
