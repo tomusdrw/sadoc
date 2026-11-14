@@ -131,6 +131,12 @@ user namespace.
 Images and containers live under the persistent tool cache, so the image is
 built once and reused.
 
+Shell commands also redirect `XDG_DATA_HOME`, `PNPM_HOME`, pnpm's store directory,
+and `COREPACK_HOME` into the persistent tool cache after loading profiles.
+Changing `HOME` alone is insufficient: inherited package-manager paths can still
+point at the read-only host home. Installs must populate writable cached storage
+and reuse it across commands without granting write access to the user's store.
+
 ---
 
 ## 4. Detection

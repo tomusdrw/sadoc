@@ -1,5 +1,6 @@
 """Exercise the RPC boundary without a model server."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -141,6 +142,50 @@ def test_rpc_bash_uses_the_sandbox_and_scrubs_credentials(tmp_path, monkeypatch)
         response = session.bash("git push", timeout=20)
         assert response["data"]["exitCode"] == 1
         assert "Blocked by sadoc policy" in response["data"]["output"]
+    finally:
+        session.close()
+
+
+def test_package_manager_data_stays_in_writable_persistent_cache(tmp_path, monkeypatch):
+    import json
+    import shutil
+
+    if not shutil.which("pi") or not shutil.which("bwrap"):
+        pytest.skip("pi and bubblewrap are needed for the RPC sandbox smoke test")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "tool cache"
+    monkeypatch.setenv("SADOC_CACHE_DIR", str(cache))
+    # Host settings must not send installs back to the read-only real home.
+    for name in ("XDG_DATA_HOME", "PNPM_HOME", "npm_config_store_dir", "COREPACK_HOME"):
+        monkeypatch.setenv(name, f"/usr/share/host-only/{name}")
+    session = PiSession(
+        workspace, PiModel("test", "http://localhost:1", "test"), tmp_path / "agent"
+    )
+    try:
+        session.start()
+        response = session.bash(
+            "python3 - <<'PY'\n"
+            "import os,json\n"
+            "from pathlib import Path\n"
+            "paths = {key: os.environ[key] for key in "
+            "['XDG_DATA_HOME', 'PNPM_HOME', 'npm_config_store_dir', 'COREPACK_HOME']}\n"
+            "print(json.dumps(paths))\n"
+            "for path in paths.values():\n"
+            " p = Path(path); p.mkdir(parents=True, exist_ok=True)\n"
+            " (p / 'cached-evidence').write_text('retained')\n"
+            "PY",
+            timeout=20,
+        )
+        assert response["data"]["exitCode"] == 0, response["data"]["output"]
+        paths = json.loads(response["data"]["output"])
+        for path in paths.values():
+            assert Path(path).is_relative_to(cache)
+            assert (Path(path) / "cached-evidence").read_text() == "retained"
+        # Each command gets a fresh /tmp; package-manager data must survive it.
+        response = session.bash('cat "$npm_config_store_dir/cached-evidence"', timeout=20)
+        assert response["data"]["exitCode"] == 0
+        assert response["data"]["output"] == "retained"
     finally:
         session.close()
 

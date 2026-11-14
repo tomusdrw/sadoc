@@ -418,6 +418,9 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 		`[ -r ${q(realHome)}/.profile ] && . ${q(realHome)}/.profile`,
 		`export HOME=${q(scratch)}`,
 		`export XDG_CACHE_HOME=${q(scratch)}/.cache`,
+		// An inherited XDG_DATA_HOME points pnpm back at the read-only host
+		// store even after HOME is redirected. Keep package data persistent.
+		`export XDG_DATA_HOME=${q(cache)}/data`,
 		// The persistent cache, named so the agent can install tools into it
 		// instead of into a temporary directory that is thrown away each run.
 		`export SADOC_TOOL_CACHE=${q(cache)}`,
@@ -426,6 +429,9 @@ export function buildSandbox(command: string, cwd: string, timeoutSeconds: numbe
 		// not in the scratch tmpfs, so a run does not re-download the registry.
 		`export CARGO_HOME=${q(cache)}/cargo`,
 		`export npm_config_cache=${q(cache)}/npm`,
+		`export PNPM_HOME=${q(cache)}/pnpm`,
+		`export npm_config_store_dir=${q(cache)}/pnpm/store`,
+		`export COREPACK_HOME=${q(cache)}/corepack`,
 		`export GOCACHE=${q(cache)}/go-build`,
 		`export GOPATH=${q(cache)}/go`,
 		`export GOMODCACHE=${q(cache)}/go/pkg/mod`,
