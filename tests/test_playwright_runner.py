@@ -128,10 +128,11 @@ def test_runner_preserves_suite_failure(browser_repo):
 
 
 @pytest.mark.parametrize("version", ["^1.63.0", "1.63.0-beta", "1.63.0; true"])
-def test_runner_rejects_unpinned_or_unsupported_versions(browser_repo, version):
+@pytest.mark.parametrize("args", [("--", "true"), ("--image-only",)])
+def test_runner_rejects_unpinned_or_unsupported_versions(browser_repo, version, args):
     repo, _, run = browser_repo
     (repo / "node_modules/playwright/package.json").write_text(json.dumps({"version": version}))
-    assert run("--", "true").returncode != 0
+    assert run(*args).returncode != 0
     assert not (repo / "runtime.json").exists()
 
 
@@ -150,12 +151,13 @@ def test_runner_resolves_playwright_test_when_playwright_is_not_hoisted(browser_
     assert run("--", "true").returncode == 0
 
 
-def test_runner_rejects_conflicting_installed_browser_versions(browser_repo):
+@pytest.mark.parametrize("args", [("--", "true"), ("--image-only",)])
+def test_runner_rejects_conflicting_installed_browser_versions(browser_repo, args):
     repo, _, run = browser_repo
     package = repo / "node_modules/@playwright/test"
     package.mkdir(parents=True)
     (package / "package.json").write_text('{"version":"1.60.0"}')
-    proc = run("--", "true")
+    proc = run(*args)
     assert proc.returncode != 0
     assert "different versions" in proc.stderr
     assert not (repo / "runtime.json").exists()
@@ -167,4 +169,22 @@ def test_missing_database_variable_does_not_start_a_container(browser_repo):
     proc = run("--postgres-env", "TEST_DATABASE_URL", "--", "true")
     assert proc.returncode != 0
     assert "database variable" in proc.stderr
+    assert not (repo / "runtime.json").exists()
+
+
+def test_image_only_follows_installed_version_without_starting_container(browser_repo):
+    repo, _, run = browser_repo
+    for version in ("1.63.0", "1.65.1"):
+        (repo / "node_modules/playwright/package.json").write_text(json.dumps({"version": version}))
+        result = run("--image-only")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"mcr.microsoft.com/playwright:v{version}-noble\n"
+        assert not (repo / "runtime.json").exists()
+        assert not (repo / "events").exists()
+
+
+def test_image_only_cannot_silently_skip_a_test_command(browser_repo):
+    repo, _, run = browser_repo
+    result = run("--image-only", "--", "true")
+    assert result.returncode != 0
     assert not (repo / "runtime.json").exists()

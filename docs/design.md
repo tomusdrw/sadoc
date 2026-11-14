@@ -336,6 +336,15 @@ suite retains its own browser launch configuration. All three browser engines mu
 launch/render/close before the requested suite runs. Optional PostgreSQL preflight
 uses the project's `pg` package and an explicit test URL to perform `SELECT 1`
 from the same container as the tests. Suite exit codes propagate unchanged.
+
+For a separately validated container layout (for example, sharing a disposable
+database container's network namespace), `--image-only` prints just the matching
+image reference and starts nothing. The recipe must invoke it from the tested
+package directory after every locked install, then use that image in its Podman
+command and prove its own browser/database preflight. Fixed versioned Playwright
+image references are rejected in discovery reports and cannot be replayed from
+the cache. Old cached recipes are supplied as reference during rediscovery so
+their working network layout and checks can be preserved, then replayed cleanly.
 The shim checks mount sources directly from argv so workspace/cache paths with
 spaces or literal quotes retain their boundaries; outside mounts remain refused.
 

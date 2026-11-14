@@ -1,5 +1,6 @@
 // Execute from the repository/package directory after a locked dependency install:
 // node "$SADOC_PLAYWRIGHT_RUNNER" [--network NAME] [--postgres-env NAME] -- COMMAND...
+// node "$SADOC_PLAYWRIGHT_RUNNER" --image-only (for a separately validated container recipe)
 // The runtime is the policy-enforcing shim installed by sandbox.ts, never Docker.
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
@@ -43,13 +44,17 @@ async function preflight(packageName, expectedVersion, postgresEnv) {
 
 try {
     const { values, positionals } = parseArgs({
-        options: { network: { type: "string" }, "postgres-env": { type: "string" } },
+        options: { network: { type: "string" }, "postgres-env": { type: "string" },
+            "image-only": { type: "boolean" } },
         allowPositionals: true,
     });
     if (process.env.SADOC_SANDBOX !== "1" || process.env.SADOC_CONTAINER_RUNTIME !== "podman") {
         throw Error("The Playwright runner requires Sadoc's sandbox with Podman enabled");
     }
-    if (!positionals.length) throw Error("Supply the test command after --");
+    if (values["image-only"] && (positionals.length || values.network || values["postgres-env"])) {
+        throw Error("--image-only cannot be combined with a test command or container options");
+    }
+    if (!values["image-only"] && !positionals.length) throw Error("Supply the test command after --");
     const workspace = realpathSync(process.env.SADOC_WORKSPACE);
     const cache = realpathSync(process.env.SADOC_TOOL_CACHE);
     const cwd = realpathSync(process.cwd());
@@ -76,11 +81,15 @@ try {
     if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
         throw Error("A stable, exact installed Playwright version is required");
     }
+    const image = `mcr.microsoft.com/playwright:v${version}-noble`;
+    if (values["image-only"]) {
+        console.log(image);
+        process.exit(0);
+    }
     const postgresEnv = values["postgres-env"];
     if (postgresEnv && (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(postgresEnv) || !process.env[postgresEnv])) {
         throw Error("--postgres-env must name a nonempty local test database variable");
     }
-    const image = `mcr.microsoft.com/playwright:v${version}-noble`;
     const smoke = `(${preflight.toString()})(${JSON.stringify(packageName)}, ${JSON.stringify(version)}, ${JSON.stringify(postgresEnv ?? null)}).catch(e => { console.error(e); process.exitCode = 1; });`;
     const argv = ["run", "--rm", "--init", "--userns=keep-id", "--user", `${process.getuid()}:${process.getgid()}`,
         "--shm-size=1g", "--volume", `${workspace}:${workspace}:rw`,

@@ -62,9 +62,25 @@ Inside the container, PLAYWRIGHT_BROWSERS_PATH is `/ms-playwright`, not the host
 cache path. Check that the image's Node version satisfies the project's toolchain
 requirements; if not, report the incompatibility instead of substituting versions.
 
-Use this helper for exploration AND the saved recipe. Do not copy libraries out
-of an older cached browser image, patch browser binaries, or try host-library
-overrides. If the matching image cannot run, report its exact error as blocked.
+Use this helper for exploration AND the saved recipe. If its container layout
+cannot support the project's database/network setup, the saved recipe may run
+its own policy-compliant Podman command, but must resolve the image from the
+installed package on EVERY replay, after the locked install:
+
+```bash
+image=$(node "$SADOC_PLAYWRIGHT_RUNNER" --image-only) || exit
+# Use "$image" in the separately validated Podman command.
+```
+
+Run the resolver from the package directory whose tests will run. `--image-only`
+only resolves the image; it does not run browser/database preflight or tests.
+The custom recipe must still demonstrate those prerequisites and all applicable
+checks, preserve browser sandboxing, and set PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+inside the container. Never save a literal versioned Playwright image, including
+one that happened to work during discovery; such recipes are rejected.
+Do not copy libraries out of an older cached browser image, patch browser
+binaries, or try host-library overrides. If the matching image cannot run,
+report its exact error as blocked.
 Do not disable browser sandboxing or change the container security policy.
 
 When tests need PostgreSQL, start a fresh container with the version from CI and

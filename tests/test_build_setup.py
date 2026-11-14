@@ -91,6 +91,43 @@ def test_setup_is_saved_and_replayed_in_the_verification_shell(project):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
+@pytest.mark.parametrize("field", ["SETUP", "VERIFY"])
+def test_discovery_rejects_fixed_playwright_image_before_replay(project, field):
+    worker, git, session = project
+    # Even a passing command cannot establish that a fixed image will match
+    # the installed Playwright package after dependency updates.
+    session.report = REPORT.replace(
+        f"{field}: ", f"{field}: printf mcr.microsoft.com/playwright:v1.63.0-noble; "
+    )
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "invalid_report"
+    assert "--image-only" in result["notes"]
+    assert session.commands == []
+
+
+def test_cached_fixed_playwright_image_is_rediscovered_with_previous_recipe(project):
+    worker, git, session = project
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    saved = dict(worker.state.setup("alice/repo"))
+    saved["verify_command"] += "\nprintf mcr.microsoft.com/playwright:v1.63.0-noble"
+    worker.state.record_setup(
+        "alice/repo",
+        status="ok",
+        verify_command=saved["verify_command"],
+        setup_command=saved["setup_command"],
+        fingerprint=saved["fingerprint"],
+    )
+    assert worker.verify_command("alice/repo") is None
+    result = Worker(worker.cfg, worker.gh, worker.state).ensure_build_setup(
+        "alice", "repo", "main", git
+    )
+    assert result["status"] == "ok", result["notes"]
+    assert len(session.prompts) == 2
+    assert saved["verify_command"] in session.prompts[-1]
+    assert "--image-only" in session.prompts[-1]
+    assert "mcr.microsoft.com/playwright:v1.63.0-noble" not in result["verify_command"]
+
+
 @pytest.mark.parametrize(
     "setup",
     [
