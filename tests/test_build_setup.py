@@ -1,7 +1,9 @@
 """Build discovery against real Git checkouts and SQLite; only pi is replaced."""
 
+import shlex
 import sqlite3
 import subprocess
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -266,7 +268,7 @@ def test_failed_recipe_gets_one_repair_and_clean_replay(project, bad_setup):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
-def test_failed_repair_stops_and_is_memoized_with_both_errors(project):
+def test_failed_repairs_stop_and_are_memoized_with_all_errors(project):
     worker, git, session = project
 
     def prompt(self, text, **kwargs):
@@ -280,10 +282,11 @@ def test_failed_repair_stops_and_is_memoized_with_both_errors(project):
     assert result["status"] == "validation_failed"
     assert "failure-1" in result["verify_output"]
     assert "failure-2" in result["verify_output"]
-    assert "failure-2" in result["notes"]
+    assert "failure-3" in result["verify_output"]
+    assert "failure-3" in result["notes"]
     assert worker.ensure_build_setup("alice", "repo", "main", git) == result
-    assert len(session.prompts) == 2
-    assert len(session.commands) == 4  # syntax and execution for each attempt
+    assert len(session.prompts) == 3
+    assert len(session.commands) == 6  # syntax and execution for each attempt
     assert worker.verify_command("alice/repo") is None
 
 
@@ -1009,3 +1012,41 @@ def test_discovery_diagnostics_are_persisted_even_on_failure(project, report):
     result = worker.ensure_build_setup("alice", "repo", "main", git)
     assert result["diagnostics"] == worker.state.setup("alice/repo")["diagnostics"]
     assert "last output" in result["diagnostics"]
+
+
+def test_recipe_can_repair_toolchain_then_database_url(project):
+    worker, git, session = project
+    check_url = (
+        shlex.quote(sys.executable)
+        + " -c "
+        + shlex.quote(
+            "import os; from urllib.parse import urlsplit; "
+            'assert urlsplit(os.environ["DATABASE_URL"]).hostname == "127.0.0.1", '
+            '"invalid database URL"'
+        )
+    )
+    bad = (
+        "STATUS: ready\n"
+        "SETUP: export DATABASE_URL='postgres://user:pass:127.0.0.1:5432/db'\n"
+        f"VERIFY: {check_url}"
+    )
+    reports = iter(
+        [
+            "STATUS: ready\nVERIFY: echo missing-toolchain; false",
+            bad,
+            bad.replace("pass:127", "pass@127"),
+        ]
+    )
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        assert not (git.path / "artifact").exists()
+        return TurnResult(text=next(reports), settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert "missing-toolchain" in session.prompts[1]
+    assert "invalid database URL" in session.prompts[2]
+    assert "Attempt 3" in result["verify_output"]
+    assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]

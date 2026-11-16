@@ -119,6 +119,7 @@ class PiSession:
         self._active_tools: dict[str, dict] = {}
         self._original_commands: dict[str, str] = {}
         self._last_event = ""
+        self._prompt_diagnostic: dict = {}
 
     @staticmethod
     def _output_tail(result: object) -> str:
@@ -192,6 +193,7 @@ class PiSession:
         return json.dumps(
             {
                 "last_event": self._last_event,
+                "prompt": self._prompt_diagnostic,
                 "active_tools": active,
                 "tools": list(self._tool_history),
                 "stderr": self.stderr_tail()[-8000:],
@@ -382,10 +384,13 @@ class PiSession:
         *,
         report_only: bool = False,
         read_only: bool = False,
+        idle_timeout: int | None = None,
     ) -> TurnResult:
-        """Send a prompt and collect the turn's events until the agent settles."""
+        """Collect a settled turn within an absolute and optional inactivity limit."""
         result = TurnResult()
         started = time.monotonic()
+        last_progress = started
+        self._prompt_diagnostic = {}
         if report_only:
             message = "[SADOC_REPORT_ONLY]\n" + message
         elif read_only:
@@ -394,9 +399,17 @@ class PiSession:
         self._send({"id": req_id, "type": "prompt", "message": message})
 
         deadline = started + (timeout or self.timeout_s)
-        while time.monotonic() < deadline:
+        while time.monotonic() < min(
+            deadline, last_progress + idle_timeout if idle_timeout is not None else deadline
+        ):
+            remaining = (
+                min(
+                    deadline, last_progress + idle_timeout if idle_timeout is not None else deadline
+                )
+                - time.monotonic()
+            )
             try:
-                event = self._events.get(timeout=min(2.0, max(0.001, deadline - time.monotonic())))
+                event = self._events.get(timeout=min(2.0, max(0.001, remaining)))
             except queue.Empty:
                 if self._proc and self._proc.poll() is not None:
                     result.error = f"pi exited (code {self._proc.returncode})"
@@ -404,6 +417,16 @@ class PiSession:
                 continue
 
             etype = event.get("type")
+            delta = (event.get("assistantMessageEvent") or {}).get("delta")
+            if (etype == "message_update" and delta) or etype in (
+                "message_end",
+                "tool_execution_start",
+                "tool_execution_update",
+                "tool_execution_end",
+                "compaction_start",
+                "compaction_end",
+            ):
+                last_progress = time.monotonic()
             self._record_diagnostic(event)
             if etype not in ("message_update", "tool_execution_update"):
                 self.transcript.append(event)
@@ -490,6 +513,15 @@ class PiSession:
                 break
 
         result.duration_s = time.monotonic() - started
+        idle_s = time.monotonic() - last_progress
+        self._prompt_diagnostic = {
+            "duration_s": result.duration_s,
+            "idle_s": idle_s,
+            "text_tail": result.text[-4000:],
+            "thinking_tail": result.thinking[-4000:],
+            "stop_reason": result.stop_reason,
+            "settled": result.settled,
+        }
         if result.error:
             raise PiError(result.error)
         if not result.settled:
@@ -502,6 +534,8 @@ class PiSession:
                 if active
                 else f"; last event: {self._last_event or 'none'}"
             )
+            if idle_timeout is not None and idle_s >= idle_timeout:
+                detail += f"; idle for {idle_s:.1f}s"
             raise PiError(f"pi prompt timed out after {result.duration_s:.1f}s{detail}")
         if not result.text.strip():
             raise PiError("pi returned an empty response")

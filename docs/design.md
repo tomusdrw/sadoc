@@ -371,11 +371,11 @@ with a zero exit code, prevent execution. This does not detect semantic errors
 such as invalid export arguments or wrong script names; real replay still decides
 whether the recipe works.
 
-A failed syntax check or replay gets at most one repair in the discovery session,
+A failed syntax check or replay gets at most two repairs in the discovery session,
 with the exact failed commands and diagnostic output. Reset to the original tree
 before requesting repair and again before validating its complete replacement
 report. The repair must not change source or weaken checks. Explicit blocked or
-baseline-failed reports stop immediately. `verify_output` retains both attempts,
+baseline-failed reports stop immediately. `verify_output` retains all attempts,
 including the first failure if repair produces an invalid report or an agent error.
 Only successful replay and cleanup make the replacement eligible for caching.
 
@@ -457,3 +457,16 @@ exercises RPC events and, when pi/bwrap are installed, the actual RPC shell sand
 without a model call. The normal GitHub test matrix does not install pi, so that
 smoke test is skipped there. An actual model-driven discovery on a disposable
 fixture is an additional manual integration check, not a deterministic unit test.
+
+### Migration time budgets and failure evidence
+
+A migration has a two-hour absolute limit and a ten-minute inactivity limit.
+Nonempty model deltas, tool execution events, and compaction boundaries refresh
+the inactivity clock; unrelated events and empty deltas do not. Streaming cannot
+extend the absolute limit, and partial answers never count as completed turns.
+Other prompts retain their existing absolute budgets.
+
+Before migration, the failed verification output is stored locally. On pipeline
+session failure, bounded tool history and the last prompt's text/thinking tails,
+elapsed time and inactivity are saved in SQLite events before closing pi.
+These diagnostics are internal evidence, never pull-request content.

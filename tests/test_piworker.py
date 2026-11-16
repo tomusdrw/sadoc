@@ -1,5 +1,6 @@
 """Exercise the RPC boundary without a model server."""
 
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -424,3 +425,101 @@ def test_close_kills_helper_descendants_before_container_cleanup(tmp_path):
         except ProcessLookupError:
             pass
         proc.wait()
+
+
+def timed_session(tmp_path, monkeypatch, schedule):
+    """Drive the RPC clock without real waits or a model server."""
+    import queue
+
+    clock = [0.0]
+    events = iter(schedule)
+    pending = next(events, None)
+
+    class TimedEvents:
+        def get(self, timeout):
+            nonlocal pending
+            if pending is not None and pending[0] <= clock[0] + timeout:
+                clock[0], event = pending
+                pending = next(events, None)
+                return event
+            clock[0] += timeout
+            raise queue.Empty
+
+    monkeypatch.setattr("sadoc.piworker.time.monotonic", lambda: clock[0])
+    session = session_with_events(tmp_path)
+    session._events = TimedEvents()
+    return session
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "working"},
+        },
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "build",
+            "toolName": "bash",
+            "args": {"command": "make check"},
+        },
+        {"type": "tool_execution_update", "toolCallId": "build", "partialResult": "checking"},
+        {"type": "tool_execution_end", "toolCallId": "build", "result": "passed"},
+        {"type": "compaction_start"},
+        {"type": "compaction_end"},
+    ],
+)
+def test_active_migration_can_outlive_idle_budget(tmp_path, monkeypatch, event):
+    session = timed_session(
+        tmp_path,
+        monkeypatch,
+        [
+            (8, event),
+            (16, event),
+            (24, event),
+            (
+                25,
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "stopReason": "stop",
+                        "content": [{"type": "text", "text": "FIXED: yes"}],
+                    },
+                },
+            ),
+            (25, {"type": "agent_settled"}),
+        ],
+    )
+    assert session.prompt("migrate", timeout=100, idle_timeout=10).text == "FIXED: yes"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "heartbeat"},
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": ""}},
+    ],
+)
+def test_unproductive_events_do_not_extend_idle_budget(tmp_path, monkeypatch, event):
+    session = timed_session(tmp_path, monkeypatch, [(i, event) for i in range(1, 100)])
+    with pytest.raises(PiError, match="idle"):
+        session.prompt("migrate", timeout=100, idle_timeout=10)
+    assert session.diagnostics()
+    assert json.loads(session.diagnostics())["prompt"]["duration_s"] == 10
+
+
+def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):
+    delta = {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "delta": "still working"},
+    }
+    session = timed_session(tmp_path, monkeypatch, [(i, delta) for i in range(1, 100)])
+    with pytest.raises(PiError, match="timed out after 25"):
+        session.prompt("migrate", timeout=25, idle_timeout=10)
+    import json
+
+    diagnostic = json.loads(session.diagnostics())["prompt"]
+    assert diagnostic["duration_s"] == 25
+    assert "still working" in diagnostic["text_tail"]

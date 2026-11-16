@@ -100,6 +100,9 @@ def project(tmp_path, monkeypatch):
             self.prompts["prnote"] = text
             return TurnResult(text="Updated widget to the requested version.", settled=True)
 
+        def diagnostics(self):
+            return "{}"
+
         def close(self):
             pass
 
@@ -214,3 +217,54 @@ def test_markdown_whitespace_does_not_discard_the_assessment(project):
     assert "[Migration guide](https://example.org/widget/migrate-v2)" in body
     assert "`src/client.py:connect` uses a removed API." in body
     assert "assessment is unavailable" not in body
+
+
+def test_failed_migration_keeps_local_diagnostics_and_verification(project, monkeypatch):
+    project.worker.run_verify.return_value = (False, "original build failure")
+    original = project.session.prompt
+
+    def prompt(self, text, **kwargs):
+        if "## Failure output" in text:
+            raise PiError("pi prompt timed out")
+        return original(self, text, **kwargs)
+
+    monkeypatch.setattr(project.session, "prompt", prompt)
+    monkeypatch.setattr(
+        project.session,
+        "diagnostics",
+        lambda self: '{"tools": [{"output": "last migration output"}]}',
+        raising=False,
+    )
+    result = project.run("B", [update()])
+    assert result.status == "failed"
+    records = project.state.conn.execute(
+        "select data from events where repo='o/r' and data is not null"
+    ).fetchall()
+    evidence = "\n".join(r[0] for r in records)
+    assert "original build failure" in evidence
+    assert "last migration output" in evidence
+    project.gh.open_pr.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["diagnostics", "persistence"])
+def test_diagnostic_failure_does_not_replace_original_error(project, monkeypatch, failure):
+    project.session.report = PiError("original prompt failure")
+    if failure == "diagnostics":
+
+        def diagnostics(self):
+            raise RuntimeError("diagnostics unavailable")
+
+        monkeypatch.setattr(project.session, "diagnostics", diagnostics)
+    else:
+        log = project.state.log
+
+        def failing_log(message, **kwargs):
+            if message == "pipeline session failed":
+                raise RuntimeError("database temporarily locked")
+            return log(message, **kwargs)
+
+        monkeypatch.setattr(project.state, "log", failing_log)
+
+    result = project.run("B", [update()])
+    assert result.status == "failed"
+    assert result.detail == "PiError: original prompt failure"
