@@ -299,6 +299,7 @@ def cmd_monitor(args, cfg, gh, state) -> int:
         try:
             note = worker.monitor_pr(row)
             _log(f"    {note}")
+            state.log(f"monitor #{number}: {note}", repo=repo)
         except Exception as exc:  # noqa: BLE001
             _log(f"    monitor failed: {type(exc).__name__}: {exc}")
             state.log(f"monitor failed: {exc}", repo=repo, level="error")

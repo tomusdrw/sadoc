@@ -470,3 +470,25 @@ Before migration, the failed verification output is stored locally. On pipeline
 session failure, bounded tool history and the last prompt's text/thinking tails,
 elapsed time and inactivity are saved in SQLite events before closing pi.
 These diagnostics are internal evidence, never pull-request content.
+
+### Nightly monitoring and conflicting pull requests
+
+The nightly runner monitors existing PRs before scanning and creating updates.
+It parses HHMM as two hour digits and two minute digits, including overnight
+windows. Monitoring visits never-checked PRs first, then those least recently
+checked, so a long repair cannot indefinitely starve the same tail of the queue.
+Each monitoring outcome is recorded in the local event log.
+
+Conflicting PRs are repaired before interpreting checks from their old head.
+The orchestrator merges the actual base branch into the PR without rewriting
+history, recovering shallow ancestry first when necessary. Only conflicted files
+are handed to the model, with the original persisted update targets. Missing
+targets or an ambiguous version conflict require human review; the model cannot
+choose replacement versions.
+
+The orchestrator rejects edits outside the conflict set, leftover markers and
+tooling leaks, then runs the validated local recipe. Only a verified tree can be
+committed and pushed normally. A dry run or failed attempt resets the disposable
+clone to its original PR head. Conflict attempts have a separate bounded counter
+from CI repairs; successful conflict repair resets it and awaits CI on the new
+commit. Conflicts are handled even if the old head's checks are green or absent.

@@ -148,6 +148,7 @@ class State:
     MIGRATIONS = {
         "prs": {
             "ci_attempts": "INTEGER DEFAULT 0",
+            "conflict_attempts": "INTEGER DEFAULT 0",
         },
         "repo_setup": {
             "setup_command": "TEXT DEFAULT ''",
@@ -284,12 +285,14 @@ class State:
         if repo:
             return list(
                 self.conn.execute(
-                    "SELECT * FROM prs WHERE repo=? AND state='open' ORDER BY updated_at DESC",
+                    "SELECT * FROM prs WHERE repo=? AND state='open' ORDER BY COALESCE(last_checked, 0), created_at, repo, number",
                     (repo,),
                 )
             )
         return list(
-            self.conn.execute("SELECT * FROM prs WHERE state='open' ORDER BY updated_at DESC")
+            self.conn.execute(
+                "SELECT * FROM prs WHERE state='open' ORDER BY COALESCE(last_checked, 0), created_at, repo, number"
+            )
         )
 
     def pr_for_branch(self, repo: str, branch: str) -> sqlite3.Row | None:

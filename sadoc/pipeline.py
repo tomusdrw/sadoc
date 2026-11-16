@@ -1709,6 +1709,124 @@ class Worker:
                 sent.append("reminder_merge")
         return sent
 
+    def repair_conflicts(self, repo_row, view: dict, *, dry_run: bool) -> str:
+        """Merge the base into a tracked PR, verify locally, then push normally."""
+        repo, number, branch = repo_row["repo"], repo_row["number"], repo_row["branch"]
+        owner, name = repo.split("/", 1)
+        attempts = row_get(repo_row, "conflict_attempts", 0)
+        if attempts >= self.cfg.max_attempts:
+            return f"conflicts, already tried {attempts} times - leaving it for a human"
+        details = self.state.pr_details(repo, number)
+        targets = json.loads(details["updates"] or "[]") if details else []
+        if not targets:
+            return "conflicts need the original PR update targets; leaving it for a human"
+        base = view.get("baseRefName") or self.gh.default_branch(owner, name)
+        if not dry_run:
+            self.state.record_pr(repo, number, conflict_attempts=attempts + 1)
+        git = self.prepare_clone(owner, name, base)
+        setup = self.ensure_build_setup(owner, name, base, git)
+        if setup["status"] != "ok":
+            return f"conflict repair blocked by build setup: {setup['status']}"
+        if not git.fetch_branch(base) or not git.fetch_branch(branch):
+            return "conflict repair could not fetch the base or PR branch"
+        git.create_branch(branch, start_point=f"origin/{branch}")
+        original_head = git.commit_sha()
+        model = self.cfg.model_for("migrate")
+        session = PiSession(
+            cwd=git.path,
+            model=PiModel(
+                f"depsbot-{model.provider}",
+                model.base_url,
+                model.model,
+                model.context,
+                model.max_tokens,
+                model.reasoning,
+            ),
+            agent_dir=self.cfg.agent_dir,
+            allow_network=self.cfg.allow_network,
+            scrub_env=self.cfg.scrub_env,
+            extra_secrets=self._notify_secret_names(),
+            allow_containers=self.cfg.allow_containers,
+            container_runtime=self.cfg.container_runtime,
+        )
+        pushed = False
+        try:
+            conflicts = git.merge_base_branch(base)
+            if not git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip():
+                return "base already incorporated; mergeability will refresh on GitHub"
+            merge_head = git.commit_sha("MERGE_HEAD")
+            session.start()
+            if conflicts:
+                exclude = [f":(exclude,literal){path}" for path in conflicts]
+                other_changes = git._run("diff", "HEAD", "--", ".", *exclude)
+                changed_before = set(git.changed_files())
+                reply = session.prompt(
+                    load_prompt(
+                        "conflicts",
+                        BASE=base,
+                        FILES="\n".join(conflicts),
+                        UPDATES=json.dumps(targets, indent=2),
+                    ),
+                    timeout=3600,
+                    idle_timeout=600,
+                )
+                if _parse_report(reply.text).get("RESOLVED", "").lower() != "yes":
+                    raise PiError("conflict resolution was not completed")
+                if (
+                    git.commit_sha() != original_head
+                    or git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip()
+                    != merge_head
+                ):
+                    raise PiError("conflict resolution modified merge ancestry")
+                if git._run("diff", "HEAD", "--", ".", *exclude) != other_changes or set(
+                    git.changed_files()
+                ) - changed_before - set(conflicts):
+                    raise PiError("conflict resolution edited files outside the conflict set")
+            git.stage_all()
+            # Reject unresolved markers, including a model claiming success with markers left.
+            # Whitespace from the base is not ours to rewrite; only marker errors block.
+            git._run(
+                "-c",
+                "core.whitespace=-trailing-space,-space-before-tab",
+                "diff",
+                "--cached",
+                "--check",
+            )
+            if conflicts and sanitize.scan_diff(git._run("diff", "--cached", "--", *conflicts)):
+                raise PiError("conflict resolution contains internal tooling references")
+            verified_tree = git._run("write-tree").strip()
+            ok, output = self.run_verify(git, repo, session)
+            self.state.log("conflict repair verification", repo=repo, data={"output": output})
+            if not ok:
+                raise PiError("conflict resolution failed local verification: " + output[-1500:])
+            if (
+                git.commit_sha() != original_head
+                or git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip()
+                != merge_head
+                or git._run("write-tree").strip() != verified_tree
+                or git.diff().strip()
+                or git._run("ls-files", "--others", "--exclude-standard").strip()
+            ):
+                raise PiError("verification modified the resolved tree")
+            if dry_run:
+                return "conflicts resolved and verified (dry run); no push"
+            message = sanitize.scrub_text("chore: merge base branch updates")
+            if sanitize.contains_leak(message):
+                raise PiError("unsafe merge commit message")
+            git.commit(message)
+            git.push(branch)
+            pushed = True
+            self.state.record_pr(
+                repo, number, conflict_attempts=0, checks_state="pending", mergeable="UNKNOWN"
+            )
+            return "base merged and conflicts resolved; waiting for CI on the new commit"
+        finally:
+            try:
+                session.close()
+            finally:
+                if not pushed:
+                    git.clean(ref=original_head)
+
     def monitor_pr(self, repo_row, dry_run: bool | None = None) -> str:
         """One monitoring pass over an open PR: CI, reviews, mergeability.
 
@@ -1757,6 +1875,10 @@ class Worker:
             updated_at=time.time(),
             last_checked=time.time(),
         )
+
+        # Old-head CI cannot validate a resolution against the current base.
+        if view.get("mergeable") == "CONFLICTING":
+            return self.repair_conflicts(repo_row, view, dry_run=dry_run)
 
         # A pull request that has gone green can merge itself.
         if ci_state == "pass":

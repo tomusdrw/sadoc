@@ -25,8 +25,13 @@ The CI run failed. The failed step logs are below.
      tool, a runner image change, a timeout) -> do not hack the source code to work
      around it. Instead adjust the workflow in `.github/workflows/` minimally and
      correctly, and say clearly in your summary that you changed CI configuration.
-3. Verify locally by running the failing command if you can.
-4. If the failure is unrelated to the dependency update (it was already broken on
+3. When changing an action's inputs, inspect that exact action version's
+   action.yml and implementation/documentation. Input names and types are not
+   interchangeable: for example setup-node's cache selects a package manager,
+   while package-manager-cache controls automatic caching. Do not guess inputs.
+4. Verify locally by running the failing command if you can; validate workflow
+   syntax with actionlint when it is available.
+5. If the failure is unrelated to the dependency update (it was already broken on
    the base branch), say so clearly - the pipeline will then close the PR instead
    of churning.
 

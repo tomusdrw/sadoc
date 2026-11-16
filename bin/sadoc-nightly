@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Nightly runner for sadoc.
 #
-#   1. scan   - refresh the outdated-dependency inventory
-#   2. run    - pick the highest-value repos and open PRs
-#   3. monitor - chase CI and review feedback on PRs opened earlier
+#   1. monitor - chase CI, conflicts and feedback on existing PRs first
+#   2. scan   - refresh the outdated-dependency inventory
+#   3. run    - pick the highest-value repos and open PRs
 #   4. report - write a markdown digest
 #
 # The window is a hard wall-clock budget: no new repo is started when there is not
@@ -73,7 +73,7 @@ WINDOW="$(window_from_config)"
 WINDOW_START="${WINDOW%%-*}"
 WINDOW_END="${WINDOW##*-}"
 
-minutes_now() { date +%H%M | awk '{print int(substr($0,1,2))*60 + int(substr($0,2))}'; }
+minutes_now() { date +%H%M | awk '{print int(substr($0,1,2))*60 + int(substr($0,3,2))}'; }
 to_minutes() { echo "$1" | awk -F: '{print $1*60 + $2}'; }
 
 WSTART=$(to_minutes "$WINDOW_START")
@@ -93,6 +93,9 @@ TOTAL_MIN=$(( (WEND - WSTART + 1440) % 1440 ))
 log "window $WINDOW - ${DELTA_MIN} min remaining of ${TOTAL_MIN}"
 log "deadline $(date -d "@$DEADLINE" +%H:%M:%S)"
 
+log "=== monitor ==="
+run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
+
 log "=== scan ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" scan || true
 
@@ -101,9 +104,6 @@ run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" run --deadline "$DEADLINE" 
 
 log "=== doctor ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" doctor || true
-
-log "=== monitor ==="
-run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
 
 log "=== releases ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" releases --notify || true

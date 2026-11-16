@@ -32,7 +32,7 @@ keeps dependencies up to date, while Nori deploys and manages Docker-based servi
 scan      find outdated dependencies          (deterministic, no model involved)
 run       bump -> verify -> open PR -> fix CI
 doctor    check the default branch and fix what is broken
-monitor   chase failing CI and review feedback
+monitor   resolve conflicts, chase failing CI and review feedback
 remind    email about pull requests left unattended
 releases  report which repositories owe a release
 report    markdown digest

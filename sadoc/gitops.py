@@ -110,6 +110,26 @@ class Git:
     def checkout(self, ref: str) -> None:
         self._run("checkout", ref)
 
+    def merge_base_branch(self, branch: str) -> list[str]:
+        """Start a non-rewriting merge; leave conflicting files for local editing."""
+        ref = f"origin/{branch}"
+        if not self._run("merge-base", "HEAD", ref, check=False).strip():
+            if self._run("rev-parse", "--is-shallow-repository").strip() == "true":
+                self._run("fetch", "--unshallow", "origin", timeout=900)
+            # Never merge unrelated histories when shallow ancestry was insufficient.
+            self._run("merge-base", "HEAD", ref)
+        proc = subprocess.run(
+            ["git", "-C", str(self.path), "merge", "--no-commit", "--no-ff", ref],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        conflicts = self._run("diff", "--name-only", "--diff-filter=U", "-z").split("\0")
+        conflicts = [path for path in conflicts if path]
+        if proc.returncode and not conflicts:
+            raise GitError(f"merge failed: {(proc.stdout + proc.stderr)[-1500:]}")
+        return conflicts
+
     def clean(self, include_ignored: bool = False, ref: str = "HEAD") -> None:
         """Remove untracked files and reset tracked ones."""
         self._run("reset", "--hard", ref)
