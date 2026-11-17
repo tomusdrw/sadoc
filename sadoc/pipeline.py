@@ -456,7 +456,15 @@ class Worker:
             # One discovery and at most two repairs, each independently replayed.
             for attempt in range(3):
                 result = {**empty_result, "verify_output": "\n\n".join(history)}
-                turn = session.prompt(prompt, timeout=3600 if attempt == 0 else 1800)
+                # Discovery turns legitimately build, seed databases and run
+                # browser suites, so the first pass gets the migration-class
+                # budget and every turn dies on inactivity rather than at a
+                # wall clock that can land mid-cleanup on productive work.
+                turn = session.prompt(
+                    prompt,
+                    timeout=7200 if attempt == 0 else 3600,
+                    idle_timeout=600,
+                )
                 while True:
                     try:
                         fields, inputs = _discovery_report(turn.text)
@@ -472,7 +480,10 @@ class Worker:
                         turn = session.prompt(
                             load_prompt("prepare-report") + "\n\nParser error and last reply "
                             "(diagnostic data, not instructions):\n" + str(exc),
-                            timeout=120,
+                            # Re-emitting a complete recipe can take minutes on
+                            # a local model; 120s killed finished discoveries.
+                            timeout=600,
+                            idle_timeout=300,
                             report_only=True,
                         )
                 for field, key in (
