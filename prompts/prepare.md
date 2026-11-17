@@ -23,7 +23,9 @@ silently omit a failing local test or label it CI-only to get a passing result.
 
 ## Stay within the discovery budget
 
-Discovery has one hour total. Each shell command is capped at 15 minutes; use
+Discovery has two hours for the first pass, and each repair pass has one hour.
+Inactivity for ten minutes also ends the pass, so keep output flowing while
+commands run. Each shell command is capped at 15 minutes; use
 shorter timeouts for probes, service readiness and network requests. Repeating an
 identical failed command more than twice is blocked. Do not evade this with shell
 formatting changes: retry only after identifying and correcting the cause.

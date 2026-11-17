@@ -226,6 +226,32 @@ def test_syntax_check_allows_extended_globs_enabled_by_setup(project):
     assert "data" in result["verify_output"]
 
 
+def test_discovery_and_repair_turns_have_migration_class_time_budgets(project):
+    """Heavy repos build, seed databases and run browser suites during discovery.
+
+    A productive turn must not be killed by an absolute limit sized below the
+    work, and a wedged turn must die on inactivity instead of burning the
+    whole budget (see docs/design.md, migration time budgets).
+    """
+    worker, git, session = project
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        assert kwargs["idle_timeout"] == 600
+        if len(self.prompts) == 1:
+            assert kwargs["timeout"] == 7200
+            return TurnResult(
+                text="STATUS: ready\nVERIFY: printf first-failure; false", settled=True
+            )
+        assert kwargs["timeout"] == 3600
+        return TurnResult(text=REPORT, settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert result["status"] == "ok", result["notes"]
+    assert len(session.prompts) == 2
+
+
 @pytest.mark.parametrize(
     "bad_setup",
     ["if then", "export MARKER=value mkdir -p cache", "printf earlier > artifact"],
@@ -347,7 +373,8 @@ def test_malformed_final_report_gets_tool_free_format_recovery(project, replacem
         if len(self.prompts) == 1:
             return TurnResult(text="Cleanup confirmed. The report above is final.", settled=True)
         assert kwargs["report_only"] is True
-        assert kwargs["timeout"] <= 120
+        assert kwargs["timeout"] == 600
+        assert kwargs["idle_timeout"] == 300
         assert "Cleanup confirmed" in text
         (git.path / "artifact").write_text("must not survive clean replay")
         return TurnResult(text=replacement, settled=True)

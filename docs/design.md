@@ -294,7 +294,12 @@ the matcher evaluates every comparison rather than only the first.
 
 ## 11. Project discovery and recipe replay
 
-Initial discovery has a one-hour deadline, 15-minute shell limits and at most two
+Initial discovery has a two-hour deadline (each repair turn half of it) and a
+ten-minute inactivity limit, matching the migration budgets: heavy recipes
+install toolchains, build, seed databases and run browser suites, and a hard
+kill has landed on fully productive work minutes before the final reply. The
+inactivity limit bounds a wedged session without punishing quiet-but-progressing
+builds. Discovery retains 15-minute shell limits and at most two
 executions of an identical failing shell command. RPC recipe replay retains its
 30-minute deadline. GNU `timeout` bounds sandbox execution and the external
 container helper, so a hung child cannot keep a command waiting indefinitely.
@@ -318,7 +323,9 @@ backticks. Prose fields continue to fold continuation lines into spaces.
 
 Cleanup must precede the final structured reply. A settled nonempty reply with
 missing/invalid fields gets one formatting-only recovery, shared across initial
-discovery and recipe repair, with a 120-second timeout. The sandbox extension
+discovery and recipe repair, with a ten-minute absolute and five-minute
+inactivity limit: re-emitting a complete recipe can take minutes on a local
+model, and a timeout here discards an otherwise finished discovery. The sandbox extension
 removes active tools for this turn and rejects residual calls, so formatting cannot
 restart exploration or cleanup. The next ordinary prompt restores the prior tool
 set. Only the recovered settled reply is parsed; earlier assistant messages never
