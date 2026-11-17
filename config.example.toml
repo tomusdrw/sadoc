@@ -1,11 +1,11 @@
 # sadoc configuration
 #
-# Copy to ~/.config/sadoc/config.toml and edit:
+# Copy to ~/.sadoc/config.toml and edit:
 #
-#   mkdir -p ~/.config/sadoc
-#   cp config.example.toml ~/.config/sadoc/config.toml
+#   mkdir -p ~/.sadoc
+#   cp config.example.toml ~/.sadoc/config.toml
 #
-# Secrets do NOT belong in this file. Put them in ~/.config/sadoc/secrets.env
+# Secrets do NOT belong in this file. Put them in ~/.sadoc/secrets.env
 # (chmod 600) and reference the environment variable name here. The systemd
 # unit loads that file; the agent sandbox scrubs those variables so the model
 # can never read them.

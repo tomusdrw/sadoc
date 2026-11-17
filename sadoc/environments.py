@@ -18,11 +18,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
 from . import semver
+from .config import HOME
 
-CACHE_DIR = Path.home() / ".cache" / "sadoc" / "environments"
+CACHE_DIR = HOME / "environments"
 CACHE_TTL = 12 * 3600
 UA = "sadoc/1.0"
 

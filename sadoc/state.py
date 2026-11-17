@@ -14,7 +14,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DEFAULT_DB = Path.home() / ".local" / "share" / "sadoc" / "state.db"
+from .config import HOME
+
+DEFAULT_DB = HOME / "state.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (

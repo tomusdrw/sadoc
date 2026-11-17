@@ -7,7 +7,12 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CONFIG = Path.home() / ".config" / "sadoc" / "config.toml"
+# Everything sadoc owns lives under one root: the configuration, the secrets,
+# the state database, the logs, the reports, the repository checkouts and the
+# tool caches. One folder to inspect, back up or wipe, rather than a piece in
+# .config, a piece in .local/share and a piece in .cache.
+HOME = Path.home() / ".sadoc"
+DEFAULT_CONFIG = HOME / "config.toml"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -29,10 +34,10 @@ class ModelSpec:
 class Config:
     owner: str = ""
     owners: list[str] = field(default_factory=list)
-    state_db: Path = Path.home() / ".local" / "share" / "sadoc" / "state.db"
-    workdir: Path = Path.home() / ".cache" / "sadoc" / "work"
-    agent_dir: Path = Path.home() / ".cache" / "sadoc" / "pi-agent"
-    report_dir: Path = Path.home() / ".local" / "share" / "sadoc" / "reports"
+    state_db: Path = HOME / "state.db"
+    workdir: Path = HOME / "work"
+    agent_dir: Path = HOME / "pi-agent"
+    report_dir: Path = HOME / "reports"
 
     # schedule
     window_start: str = "01:00"

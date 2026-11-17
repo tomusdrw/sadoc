@@ -15,10 +15,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SADOC_HOME="${SADOC_HOME:-$(dirname "$SCRIPT_DIR")}"
 SADOC_BIN="$SADOC_HOME/bin/sadoc"
-CONFIG="${SADOC_CONFIG:-$HOME/.config/sadoc/config.toml}"
-LOG_DIR="${SADOC_LOG_DIR:-$HOME/.local/share/sadoc/logs}"
-REPORT_DIR="${SADOC_REPORT_DIR:-$HOME/.local/share/sadoc/reports}"
-STATE_DB="${SADOC_DB:-$HOME/.local/share/sadoc/state.db}"
+CONFIG="${SADOC_CONFIG:-$HOME/.sadoc/config.toml}"
+LOG_DIR="${SADOC_LOG_DIR:-$HOME/.sadoc/logs}"
+REPORT_DIR="${SADOC_REPORT_DIR:-$HOME/.sadoc/reports}"
+STATE_DB="${SADOC_DB:-$HOME/.sadoc/state.db}"
 
 if [ ! -x "$SADOC_BIN" ]; then
   echo "sadoc not found at $SADOC_BIN" >&2

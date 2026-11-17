@@ -99,17 +99,40 @@ To add support for one, the ecosystem needs a manifest parser in
 ## Install
 
 ```bash
-git clone https://github.com/tomusdrw/sadoc.git ~/.local/share/sadoc
-mkdir -p ~/.config/sadoc
-cp ~/.local/share/sadoc/config.example.toml ~/.config/sadoc/config.toml
-$EDITOR ~/.config/sadoc/config.toml
+git clone https://github.com/tomusdrw/sadoc.git ~/sadoc
+mkdir -p ~/.sadoc
+cp ~/sadoc/config.example.toml ~/.sadoc/config.toml
+$EDITOR ~/.sadoc/config.toml
 ```
 
 Point the config at your model endpoint, then check the scope:
 
 ```bash
-~/.local/share/sadoc/bin/sadoc scope
+~/sadoc/bin/sadoc scope
 ```
+
+### Where things live
+
+Everything sadoc owns is in one place, so it can be inspected, backed up or
+deleted as a whole. The code is a plain git checkout wherever you put it; the
+data is `~/.sadoc`:
+
+```
+~/.sadoc/
+  config.toml     configuration (see config.example.toml)
+  secrets.env     credentials, chmod 600 - never in config.toml
+  state.db        what is in scope, what is open, what happened
+  logs/           one log per nightly run
+  reports/        the markdown digest of each run
+  work/           a checkout of every repository being handled
+  toolcache/      package-manager caches, toolchains, container images
+  pi-agent/       the agent harness's own directory
+  registry/       cached registry version lookups
+  environments/   cached CI runtime (node-version, python-version, ...) lookups
+```
+
+Nothing is written outside it except the systemd units in
+`~/.config/systemd/user/`, which is where systemd keeps user units.
 
 ```
 [12:00:00] in scope: 12   excluded: 89
@@ -121,10 +144,10 @@ Point the config at your model endpoint, then check the scope:
 Never put credentials in `config.toml`. Use `secrets.env`:
 
 ```bash
-cat > ~/.config/sadoc/secrets.env <<'EOF'
+cat > ~/.sadoc/secrets.env <<'EOF'
 RESEND_API_KEY=re_...
 EOF
-chmod 600 ~/.config/sadoc/secrets.env
+chmod 600 ~/.sadoc/secrets.env
 ```
 
 The config references the **name** of the variable. The systemd unit loads the
@@ -163,7 +186,7 @@ the code that was just fetched. Set `SADOC_SELF_UPDATE=0` to turn it off.
 ### Nightly
 
 ```bash
-cp ~/.local/share/sadoc/systemd/* ~/.config/systemd/user/
+cp ~/sadoc/systemd/* ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now sadoc.timer sadoc-remind.timer
 ```
@@ -221,7 +244,7 @@ ref 8f2a1c3d
 Look a reference id up locally with:
 
 ```bash
-sqlite3 ~/.local/share/sadoc/state.db \
+sqlite3 ~/.sadoc/state.db \
   "select repo, number, tier, model, branch from pr_details where ref_id='8f2a1c3d'"
 ```
 

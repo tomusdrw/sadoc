@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import policy
+from .config import HOME as SADOC_HOME
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SANDBOX_EXTENSION = REPO_ROOT / "extensions" / "sandbox.ts"
@@ -216,9 +217,7 @@ class PiSession:
         env["SADOC_ALLOW_NET"] = "1" if self._allow_network else "0"
         # A persistent cache for the package managers, so a run does not
         # re-download the whole registry.
-        cache_dir = Path(
-            os.environ.get("SADOC_CACHE_DIR", Path.home() / ".cache" / "sadoc" / "toolcache")
-        )
+        cache_dir = Path(os.environ.get("SADOC_CACHE_DIR", SADOC_HOME / "toolcache"))
         cache_dir.mkdir(parents=True, exist_ok=True)
         env["SADOC_CACHE_DIR"] = str(cache_dir)
         env["SADOC_ALLOW_CONTAINERS"] = "1" if self._allow_containers else "0"

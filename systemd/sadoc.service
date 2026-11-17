@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/share/sadoc/bin/sadoc-nightly
+ExecStart=%h/sadoc/bin/sadoc-nightly
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-Environment=PI_CODING_AGENT_DIR=%h/.cache/sadoc/pi-agent
-EnvironmentFile=-%h/.config/sadoc/secrets.env
+Environment=PI_CODING_AGENT_DIR=%h/.sadoc/pi-agent
+EnvironmentFile=-%h/.sadoc/secrets.env
 TimeoutStartSec=infinity
 Nice=10

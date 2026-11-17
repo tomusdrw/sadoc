@@ -13,7 +13,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-CACHE_DIR = Path.home() / ".cache" / "sadoc"
+from .config import HOME
+
+# Registry lookups, cached so a re-scan does not re-question the registry.
+CACHE_DIR = HOME / "registry"
 CACHE_TTL = 6 * 3600
 UA = "sadoc/1.0"
 
