@@ -512,3 +512,33 @@ committed and pushed normally. A dry run or failed attempt resets the disposable
 clone to its original PR head. Conflict attempts have a separate bounded counter
 from CI repairs; successful conflict repair resets it and awaits CI on the new
 commit. Conflicts are handled even if the old head's checks are green or absent.
+
+## 12. Disposable checkout ownership
+
+Every pipeline path that creates a clone holds `Worker.prepare_clone` as a
+context manager until all sessions have closed and all Git/GitHub operations
+have finished: discovery, updates, doctor, conflict repair and PR monitoring.
+Discovery with an explicit `git` borrows its caller's checkout. Removal deletes
+the entire clone, including ignored build/install artifacts, and also runs when
+cloning fails partway through. A cleanup error is surfaced; if work already
+failed, its exception is preserved with the cleanup failure attached and logged.
+
+New clones live only under the reserved `workdir/.sadoc-checkouts/` directory.
+An advisory lock on `workdir/.sadoc-work.lock` covers recovery and each checkout's
+whole lifetime. It is nonblocking: overlapping jobs get an explicit busy error.
+The lock file remains to avoid an inode replacement race. All managed leftovers,
+including partial clones without Git metadata, are reclaimed under that lock
+before another checkout. CLI `run`, `monitor` and `doctor` also recover before
+scoping or checking models, so recovery does not depend on revisiting a repository.
+A SIGKILL or power loss cannot run `finally`; the next invocation does recovery.
+
+Legacy flat `owner__repo` directories are deleted only when an ordinary, unlinked
+`.git/config` records the exact HTTPS GitHub origin Sadoc would have cloned for
+that name. Unknown directories, symlinks and `.git` files belonging to worktrees
+are not evidence of legacy ownership. Managed child symlinks are unlinked without
+following them, and a symlink at the managed root is rejected.
+
+Package caches, installed toolchains and container images remain persistent.
+Logs, reports and the SQLite history also have independent lifetimes. Checkout
+cleanup provides no global cache eviction or disk quota. Sandbox scratch files
+already live on per-command tmpfs; they need no host-directory sweep.

@@ -4,6 +4,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -37,7 +38,7 @@ def project(tmp_path, monkeypatch):
     state = State(tmp_path / "state.db")
     worker = Worker(Config(disable_dependabot=False), Mock(), state)
     worker.gh.default_branch.return_value = "main"
-    worker.prepare_clone = lambda *a: git
+    worker.prepare_clone = lambda *a: nullcontext(git)
 
     class LocalSession:
         report = REPORT

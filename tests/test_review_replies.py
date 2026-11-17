@@ -1,6 +1,7 @@
 """Acknowledgements belong on the original comment, without noisy PR replies."""
 
 import subprocess
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -70,7 +71,7 @@ def review(tmp_path, monkeypatch):
     monkeypatch.setattr("sadoc.pipeline.PiSession", lambda **kwargs: session)
     state = State(tmp_path / "state.db")
     worker = Worker(Config(), client, state)
-    monkeypatch.setattr(worker, "prepare_clone", lambda *args: git)
+    monkeypatch.setattr(worker, "prepare_clone", lambda *args: nullcontext(git))
     row = {"repo": "o/r", "number": 7, "branch": "deps/update", "tier": "A"}
     state.record_pr("o/r", 7, branch="deps/update", tier="A", state="open")
     yield SimpleNamespace(worker=worker, gh=client, git=git, session=session, row=row)

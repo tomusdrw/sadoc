@@ -124,12 +124,26 @@ data is `~/.sadoc`:
   state.db        what is in scope, what is open, what happened
   logs/           one log per nightly run
   reports/        the markdown digest of each run
-  work/           a checkout of every repository being handled
+  work/           disposable checkouts, removed when each job finishes
   toolcache/      package-manager caches, toolchains, container images
   pi-agent/       the agent harness's own directory
   registry/       cached registry version lookups
   environments/   cached CI runtime (node-version, python-version, ...) lookups
 ```
+
+Checkouts live under `work/.sadoc-checkouts/` only while a job needs them.
+Success, failure and early exits remove the whole clone, including `node_modules`,
+virtualenvs, nested fixture clones and build output. `run`, `monitor` and `doctor`
+recover checkouts left by a killed process before looking for new work, even if
+there is no work to do. Recognizable clones from the older `work/owner__repo`
+layout are reclaimed too; unrelated directories and worktrees are left alone.
+A workdir lock prevents overlapping jobs from deleting an active checkout.
+
+This keeps repository builds from accumulating between nights. It is not a total
+disk limit: `toolcache/` intentionally retains downloaded packages, toolchains
+and container images, and logs and reports retain their history. Those can still
+grow independently of checkouts. Sandbox `/tmp` is temporary and disappears when
+the sandbox command exits.
 
 Nothing is written outside it except the systemd units in
 `~/.config/systemd/user/`, which is where systemd keeps user units.

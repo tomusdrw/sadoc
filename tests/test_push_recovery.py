@@ -8,6 +8,7 @@ branch it is not allowed to overwrite.
 """
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -62,7 +63,7 @@ def project(tmp_path, monkeypatch):
     gh.pr_list.return_value = []
     gh.open_pr.return_value = {"url": "https://github.com/o/r/pull/7"}
     worker = Worker(Config(disable_dependabot=False), gh, state)
-    monkeypatch.setattr(worker, "prepare_clone", lambda *a: git)
+    monkeypatch.setattr(worker, "prepare_clone", lambda *a: nullcontext(git))
     monkeypatch.setattr(worker, "ensure_build_setup", lambda *a: {"status": "ok"})
     worker.run_verify = Mock(return_value=(True, "all checks passed"))
     worker.watch_ci = Mock(return_value="pass")

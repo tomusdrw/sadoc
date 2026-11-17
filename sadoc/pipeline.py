@@ -14,6 +14,8 @@ import json
 import re
 import shlex
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC
 
@@ -27,6 +29,7 @@ from . import (
     persona,
     release_check,
     sanitize,
+    workspaces,
 )
 from .detect import Update
 from .gitops import Git, GitError
@@ -306,11 +309,12 @@ class Worker:
             return None
         return None
 
-    def prepare_clone(self, owner: str, repo: str, branch: str) -> Git:
-        dest = self.cfg.workdir / f"{owner}__{repo}"
-        git = Git(dest)
-        git.clone(f"https://github.com/{owner}/{repo}.git", branch)
-        return git
+    @contextmanager
+    def prepare_clone(self, owner: str, repo: str, branch: str) -> Iterator[Git]:
+        with workspaces.checkout(self.cfg.workdir, owner, repo) as dest:
+            git = Git(dest)
+            git.clone(f"https://github.com/{owner}/{repo}.git", branch)
+            yield git
 
     # ------------------------------------------------------------- verify
     def _verify_override(self, repo: str) -> str | None:
@@ -422,10 +426,18 @@ class Worker:
         }
         if git is None:
             try:
-                git = self.prepare_clone(owner, repo, branch)
+                with self.prepare_clone(owner, repo, branch) as clone:
+                    result = self.discover_verify_command(owner, repo, branch, git=clone)
             except Exception as exc:  # noqa: BLE001
-                result.update(status="clone_failed", notes=f"{type(exc).__name__}: {exc}")
-                return result
+                if result["status"] == "unknown":
+                    result.update(status="clone_failed", notes=f"{type(exc).__name__}: {exc}")
+                else:
+                    if result["status"] == "ok":
+                        result["status"] = "cleanup_failed"
+                    result["notes"] = (
+                        result["notes"] + f"\nCleanup failed: {type(exc).__name__}: {exc}"
+                    ).strip()
+            return result
         original_commit = git.commit_sha()
         model = self.cfg.models.get("prepare") or self.cfg.model_for("bump")
         spec = PiModel(
@@ -769,101 +781,101 @@ class Worker:
             repo=f"{owner}/{repo}",
         )
 
-        git = self.prepare_clone(owner, repo, branch)
-        fix_branch = f"fix/{repo}/{time.strftime('%Y%m%d-%H%M%S')}"
-        git.create_branch(fix_branch)
+        with self.prepare_clone(owner, repo, branch) as git:
+            fix_branch = f"fix/{repo}/{time.strftime('%Y%m%d-%H%M%S')}"
+            git.create_branch(fix_branch)
 
-        model = self.cfg.model_for("fixci")
-        spec = PiModel(
-            name=f"sadoc-{model.provider}",
-            base_url=model.base_url,
-            model=model.model,
-            context=model.context,
-            max_tokens=model.max_tokens,
-            reasoning=model.reasoning,
-        )
-        session = PiSession(
-            cwd=git.path,
-            model=spec,
-            agent_dir=self.cfg.agent_dir,
-            allow_network=self.cfg.allow_network,
-            scrub_env=self.cfg.scrub_env,
-            extra_secrets=self._notify_secret_names(),
-            allow_containers=self.cfg.allow_containers,
-            container_runtime=self.cfg.container_runtime,
-        )
-        try:
-            session.start()
-            prompt = load_prompt(
-                "doctor",
-                JOB=diagnosis.failed_job or "the build",
-                BRANCH=branch,
-                LOGS=doctor.summarise(diagnosis),
+            model = self.cfg.model_for("fixci")
+            spec = PiModel(
+                name=f"sadoc-{model.provider}",
+                base_url=model.base_url,
+                model=model.model,
+                context=model.context,
+                max_tokens=model.max_tokens,
+                reasoning=model.reasoning,
             )
-            turn = session.prompt(prompt, timeout=3600)
-            self._safe_log(f"doctor: {turn.text[:300]}", repo=f"{owner}/{repo}")
-            changed = git.changed_files()
-            if not changed:
-                result["detail"] = "the model could not fix it"
+            session = PiSession(
+                cwd=git.path,
+                model=spec,
+                agent_dir=self.cfg.agent_dir,
+                allow_network=self.cfg.allow_network,
+                scrub_env=self.cfg.scrub_env,
+                extra_secrets=self._notify_secret_names(),
+                allow_containers=self.cfg.allow_containers,
+                container_runtime=self.cfg.container_runtime,
+            )
+            try:
+                session.start()
+                prompt = load_prompt(
+                    "doctor",
+                    JOB=diagnosis.failed_job or "the build",
+                    BRANCH=branch,
+                    LOGS=doctor.summarise(diagnosis),
+                )
+                turn = session.prompt(prompt, timeout=3600)
+                self._safe_log(f"doctor: {turn.text[:300]}", repo=f"{owner}/{repo}")
+                changed = git.changed_files()
+                if not changed:
+                    result["detail"] = "the model could not fix it"
+                    self.notify(
+                        alerts.failure(
+                            f"{owner}/{repo}",
+                            "the default branch is broken",
+                            (diagnosis.detail + "\n" + turn.text[:1200]).strip(),
+                            persona=self.persona,
+                        )
+                    )
+                    return result
+
+                message = f"fix: {diagnosis.failed_job or 'the build'} is broken"
+                git.commit(message)
+                if dry_run:
+                    result["detail"] = f"dry run - would open a PR with {len(changed)} files"
+                    result["pr"] = ""
+                    return result
+                git.push(fix_branch)
+                pr = self.gh.open_pr(
+                    owner,
+                    repo,
+                    f"fix: {diagnosis.failed_job or 'the build'} is broken on {branch}",
+                    f"The default branch is failing.\n\n{diagnosis.detail}\n\n"
+                    f"```\n{doctor.summarise(diagnosis, 4000)}\n```\n\n"
+                    f"Fixed by Sadoc.",
+                    fix_branch,
+                    branch,
+                )
+                result["pr"] = pr.get("url", "")
+                self.state.record_pr(
+                    f"{owner}/{repo}",
+                    0,
+                    tier="D",
+                    title=pr.get("url", ""),
+                    url=pr.get("url", ""),
+                    branch=fix_branch,
+                    state="open",
+                )
                 self.notify(
-                    alerts.failure(
+                    alerts.branch_fixed(
                         f"{owner}/{repo}",
-                        "the default branch is broken",
-                        (diagnosis.detail + "\n" + turn.text[:1200]).strip(),
+                        pr.get("url", ""),
+                        diagnosis.failed_job,
+                        turn.text[:800],
                         persona=self.persona,
                     )
                 )
                 return result
-
-            message = f"fix: {diagnosis.failed_job or 'the build'} is broken"
-            git.commit(message)
-            if dry_run:
-                result["detail"] = f"dry run - would open a PR with {len(changed)} files"
-                result["pr"] = ""
+            except PiError as exc:
+                result["state"] = "agent_failed"
+                result["detail"] = f"could not diagnose the failure: {exc}"
+                self._safe_log(result["detail"], repo=f"{owner}/{repo}", level="error")
+                self.notify(
+                    alerts.failure(
+                        f"{owner}/{repo}", "diagnosis agent", result["detail"], persona=self.persona
+                    )
+                )
                 return result
-            git.push(fix_branch)
-            pr = self.gh.open_pr(
-                owner,
-                repo,
-                f"fix: {diagnosis.failed_job or 'the build'} is broken on {branch}",
-                f"The default branch is failing.\n\n{diagnosis.detail}\n\n"
-                f"```\n{doctor.summarise(diagnosis, 4000)}\n```\n\n"
-                f"Fixed by Sadoc.",
-                fix_branch,
-                branch,
-            )
-            result["pr"] = pr.get("url", "")
-            self.state.record_pr(
-                f"{owner}/{repo}",
-                0,
-                tier="D",
-                title=pr.get("url", ""),
-                url=pr.get("url", ""),
-                branch=fix_branch,
-                state="open",
-            )
-            self.notify(
-                alerts.branch_fixed(
-                    f"{owner}/{repo}",
-                    pr.get("url", ""),
-                    diagnosis.failed_job,
-                    turn.text[:800],
-                    persona=self.persona,
-                )
-            )
-            return result
-        except PiError as exc:
-            result["state"] = "agent_failed"
-            result["detail"] = f"could not diagnose the failure: {exc}"
-            self._safe_log(result["detail"], repo=f"{owner}/{repo}", level="error")
-            self.notify(
-                alerts.failure(
-                    f"{owner}/{repo}", "diagnosis agent", result["detail"], persona=self.persona
-                )
-            )
-            return result
-        finally:
-            session.close()
+            finally:
+                session.close()
 
     # ---------------------------------------------------------- leak check
     def _out_of_scope_changes(self, git: Git, updates: list[Update]) -> list[dict]:
@@ -1036,403 +1048,412 @@ class Worker:
                 self.state.end_attempt(attempt_id, "skipped", result.detail)
                 return result
 
-            git = self.prepare_clone(owner, repo, default_branch)
+            with self.prepare_clone(owner, repo, default_branch) as git:
+                # --- take over from Dependabot ---------------------------
+                # Otherwise the two open competing pull requests for the same
+                # dependency.
+                if self.cfg.disable_dependabot:
+                    self._hand_over_from_dependabot(owner, repo, default_branch)
 
-            # --- take over from Dependabot ---------------------------
-            # Otherwise the two open competing pull requests for the same
-            # dependency.
-            if self.cfg.disable_dependabot:
-                self._hand_over_from_dependabot(owner, repo, default_branch)
-
-            # --- discover and validate the repository's local build recipe ---
-            setup = self.ensure_build_setup(owner, repo, default_branch, git)
-            if setup["status"] != "ok":
-                detail = setup["notes"] or setup["status"]
-                if setup.get("prerequisites"):
-                    detail += f" (needs: {setup['prerequisites']})"
-                result.status = "failed"
-                result.detail = f"build discovery ({setup['status']}): {detail}"
-                self._safe_log(result.detail, repo=result.repo, level="error")
-                self.state.end_attempt(attempt_id, "failed", result.detail)
-                self.notify(
-                    alerts.failure(
-                        result.repo, "build discovery", result.detail, persona=self.persona
-                    )
-                )
-                return result
-            if setup.get("ci_only"):
-                self._safe_log(f"Checks requiring CI: {setup['ci_only']}", repo=result.repo)
-            git.create_branch(branch)
-            result.changes = []
-
-            model = self.cfg.model_for("migrate" if breaking_updates else "bump")
-            spec = PiModel(
-                name=f"depsbot-{model.provider}",
-                base_url=model.base_url,
-                model=model.model,
-                context=model.context,
-                max_tokens=model.max_tokens,
-                reasoning=model.reasoning,
-            )
-            session = PiSession(
-                cwd=git.path,
-                model=spec,
-                agent_dir=self.cfg.agent_dir,
-                allow_network=self.cfg.allow_network,
-                scrub_env=self.cfg.scrub_env,
-                extra_secrets=self._notify_secret_names(),
-                allow_containers=self.cfg.allow_containers,
-                container_runtime=self.cfg.container_runtime,
-            )
-            try:
-                session.start()
-                # --- assess breaking changes before touching the code ------
-                impact = None
-                if breaking_updates:
-                    assessment_head = git.commit_sha()
-                    assessment = session.prompt(
-                        load_prompt(
-                            "impact",
-                            UPDATES=render_updates(breaking_updates),
-                            NETWORK="enabled" if self.cfg.allow_network else "disabled",
-                        ),
-                        read_only=True,
-                    )
-                    impact = assessment.text.strip()
-                    self.state.log(
-                        "major-update impact assessment", repo=result.repo, data={"impact": impact}
-                    )
-                    assessed_head = git.commit_sha()
-                    assessment_changes = git.changed_files()
-                    if assessed_head != assessment_head or assessment_changes:
-                        self.state.log(
-                            "impact assessment checkout violation",
-                            repo=result.repo,
-                            level="error",
-                            data={
-                                "before_head": assessment_head,
-                                "after_head": assessed_head,
-                                "changed_files": assessment_changes,
-                            },
-                        )
-                        detail = ", ".join(assessment_changes[:20])[:1000]
-                        if assessed_head != assessment_head:
-                            detail = (
-                                f"HEAD changed from {assessment_head} to {assessed_head}; {detail}"
-                            )
-                        raise PiError(
-                            "impact assessment modified the checkout; refusing to continue: "
-                            + detail
-                        )
-                # --- bump -------------------------------------------------
-                bump_prompt = load_prompt(
-                    "bump",
-                    UPDATES=render_updates(updates),
-                    MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
-                )
-                bump = session.prompt(bump_prompt)
-                work_notes = bump.text
-                self.state.log(f"bump done: {bump.text[:400]}", repo=f"{owner}/{repo}")
-                result.changes = git.changed_files()
-                if not result.changes:
-                    result.status = "skipped"
-                    result.detail = "model made no changes"
-                    self.state.end_attempt(attempt_id, "skipped", result.detail)
-                    return result
-
-                # --- keep the change in scope ---------------------------
-                offenders = self._out_of_scope_changes(git, updates)
-                if offenders:
-                    self._safe_log(
-                        "reverting edits that are not part of the update set: "
-                        + "; ".join(f"{o['file']}: {o['line'][:60]}" for o in offenders[:5]),
-                        repo=f"{owner}/{repo}",
-                    )
-                    git.revert_lines(offenders)
-                    result.changes = git.changed_files()
-                    if not result.changes:
-                        result.status = "skipped"
-                        result.detail = "the model only made out-of-scope changes"
-                        self.state.end_attempt(attempt_id, "skipped", result.detail)
-                        return result
-
-                # --- local verify ----------------------------------------
-                ok, output = self.run_verify(git, result.repo, session)
-                if not ok:
-                    self.state.log(
-                        "local verification failed before migration",
-                        repo=result.repo,
-                        data={"output": output[-19000:]},
-                    )
-                    migrate_prompt = load_prompt(
-                        "migrate",
-                        UPDATES=render_update_list(updates),
-                        ERROR=output[-15000:],
-                        IMPACT=impact or "No pre-update assessment available.",
-                    )
-                    mig = session.prompt(migrate_prompt, timeout=7200, idle_timeout=600)
-                    work_notes += "\n\nMigration:\n" + mig.text
-                    self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
-                    ok, output = self.run_verify(git, result.repo, session)
-                if not ok:
-                    # A recipe that no longer works must not be trusted again:
-                    # mark it stale so the next run works it out afresh.
-                    self._invalidate_recipe(owner, repo, output)
+                # --- discover and validate the repository's local build recipe ---
+                setup = self.ensure_build_setup(owner, repo, default_branch, git)
+                if setup["status"] != "ok":
+                    detail = setup["notes"] or setup["status"]
+                    if setup.get("prerequisites"):
+                        detail += f" (needs: {setup['prerequisites']})"
                     result.status = "failed"
-                    result.detail = "local verification still failing after migration"
+                    result.detail = f"build discovery ({setup['status']}): {detail}"
+                    self._safe_log(result.detail, repo=result.repo, level="error")
                     self.state.end_attempt(attempt_id, "failed", result.detail)
                     self.notify(
                         alerts.failure(
-                            f"{owner}/{repo}",
-                            "local verification",
-                            output[-1500:],
-                            persona=self.persona,
+                            result.repo, "build discovery", result.detail, persona=self.persona
                         )
                     )
                     return result
+                if setup.get("ci_only"):
+                    self._safe_log(f"Checks requiring CI: {setup['ci_only']}", repo=result.repo)
+                git.create_branch(branch)
+                result.changes = []
 
-                if dry_run:
-                    result.status = "skipped"
-                    result.detail = (
-                        f"dry run - would open PR with {len(result.changes)} changed files"
-                    )
-                    self.state.log(result.detail, repo=f"{owner}/{repo}")
-                    self.state.end_attempt(attempt_id, "dry-run", result.detail)
-                    return result
-
-                # --- leak check ------------------------------------------
-                leak = self._check_for_leaks(git, result.changes)
-                if leak["blocking"]:
-                    result.status = "failed"
-                    result.detail = "blocked: " + leak["summary"]
-                    self.state.log(result.detail, repo=f"{owner}/{repo}", level="error", data=leak)
-                    self.state.end_attempt(attempt_id, "failed", result.detail)
-                    return result
-
-                # --- reviewer-facing note ---------------------------------
-                public_note = self._public_note(bump.text)
+                model = self.cfg.model_for("migrate" if breaking_updates else "bump")
+                spec = PiModel(
+                    name=f"depsbot-{model.provider}",
+                    base_url=model.base_url,
+                    model=model.model,
+                    context=model.context,
+                    max_tokens=model.max_tokens,
+                    reasoning=model.reasoning,
+                )
+                session = PiSession(
+                    cwd=git.path,
+                    model=spec,
+                    agent_dir=self.cfg.agent_dir,
+                    allow_network=self.cfg.allow_network,
+                    scrub_env=self.cfg.scrub_env,
+                    extra_secrets=self._notify_secret_names(),
+                    allow_containers=self.cfg.allow_containers,
+                    container_runtime=self.cfg.container_runtime,
+                )
                 try:
-                    note_prompt = load_prompt(
-                        "prnote",
-                        UPDATES=render_update_list(updates),
-                        WORK=sanitize.scrub_text(work_notes)[:8000],
-                    )
-                    note_result = session.prompt(note_prompt, timeout=900)
-                    raw_note = note_result.text.strip()
-                    candidate = sanitize.scrub_text(raw_note)
-                    if candidate.upper().startswith("NONE"):
-                        candidate = ""
-                    # If the note needed scrubbing, or a marker survived it,
-                    # publish nothing rather than something mangled.
-                    if candidate != raw_note or sanitize.contains_leak(candidate):
-                        self.log(
-                            "dropping the note: it mentions the tooling", repo=f"{owner}/{repo}"
+                    session.start()
+                    # --- assess breaking changes before touching the code ------
+                    impact = None
+                    if breaking_updates:
+                        assessment_head = git.commit_sha()
+                        assessment = session.prompt(
+                            load_prompt(
+                                "impact",
+                                UPDATES=render_updates(breaking_updates),
+                                NETWORK="enabled" if self.cfg.allow_network else "disabled",
+                            ),
+                            read_only=True,
                         )
-                        candidate = ""
-                    if len(candidate) > 20:
-                        public_note = candidate
-                except Exception as exc:  # noqa: BLE001
-                    self.log(f"note generation failed: {exc}", repo=f"{owner}/{repo}")
-                    public_note = public_note or ""
-
-                # --- commit + push --------------------------------------
-                message = self.commit_message(tier, updates, public_note)
-                git.commit(message)
-                try:
-                    git.push(branch)
-                except GitError as exc:
-                    # A branch of the same name may already exist on the
-                    # remote: an earlier run that pushed and died before
-                    # opening the PR, or a PR that was closed unmerged. A PR
-                    # that appeared meanwhile makes this attempt a duplicate.
-                    duplicate = self.open_pr_for_branch(owner, repo, branch)
-                    if duplicate:
+                        impact = assessment.text.strip()
+                        self.state.log(
+                            "major-update impact assessment",
+                            repo=result.repo,
+                            data={"impact": impact},
+                        )
+                        assessed_head = git.commit_sha()
+                        assessment_changes = git.changed_files()
+                        if assessed_head != assessment_head or assessment_changes:
+                            self.state.log(
+                                "impact assessment checkout violation",
+                                repo=result.repo,
+                                level="error",
+                                data={
+                                    "before_head": assessment_head,
+                                    "after_head": assessed_head,
+                                    "changed_files": assessment_changes,
+                                },
+                            )
+                            detail = ", ".join(assessment_changes[:20])[:1000]
+                            if assessed_head != assessment_head:
+                                detail = f"HEAD changed from {assessment_head} to {assessed_head}; {detail}"
+                            raise PiError(
+                                "impact assessment modified the checkout; refusing to continue: "
+                                + detail
+                            )
+                    # --- bump -------------------------------------------------
+                    bump_prompt = load_prompt(
+                        "bump",
+                        UPDATES=render_updates(updates),
+                        MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
+                    )
+                    bump = session.prompt(bump_prompt)
+                    work_notes = bump.text
+                    self.state.log(f"bump done: {bump.text[:400]}", repo=f"{owner}/{repo}")
+                    result.changes = git.changed_files()
+                    if not result.changes:
                         result.status = "skipped"
-                        result.detail = (
-                            f"PR #{duplicate.get('number')} is already open for this update"
-                        )
-                        self.state.log(result.detail, repo=f"{owner}/{repo}")
+                        result.detail = "model made no changes"
                         self.state.end_attempt(attempt_id, "skipped", result.detail)
                         return result
-                    if "! [rejected]" not in str(exc):
-                        raise
-                    # No PR refers to the leftover branch and its history has
-                    # diverged from ours. It may be a person's work - commits
-                    # carry the user's own identity either way - so it is not
-                    # ours to overwrite. Push under the next free name.
-                    replacement = self._next_free_branch(git, branch)
-                    if replacement is None:
-                        raise
-                    self.log(f"branch {branch} exists on the remote; pushing {replacement}")
-                    git.create_branch(replacement)
-                    git.push(replacement)
-                    branch = replacement
 
-                # --- open PR --------------------------------------------
-                ref_id = _make_ref_id()
-                title = PR_TITLES[tier].format(n=len(updates))
-                body = self.pr_body(updates, f"{owner}/{repo}", tier, public_note, ref_id, impact)
-                pr = self.gh.open_pr(owner, repo, title, body, branch, default_branch)
-                url = pr.get("url", "")
-                number = self._pr_number(url)
-                result.status = "pr_opened"
-                result.pr_number = number
-                result.pr_url = url
-                self.state.record_pr(
-                    f"{owner}/{repo}",
-                    number or 0,
-                    tier=tier,
-                    title=title,
-                    url=url,
-                    branch=branch,
-                    state="open",
-                )
-                # Everything that must not appear in the PR lives here.
-                self.state.record_pr_details(
-                    f"{owner}/{repo}",
-                    number or 0,
-                    ref_id=ref_id,
-                    tier=tier,
-                    model=model.model,
-                    base_url=model.base_url,
-                    branch=branch,
-                    updates=json.dumps([u.as_dict() for u in updates]),
-                    agent_notes=(f"Pre-update impact:\n{impact}\n\n" if impact is not None else "")
-                    + work_notes,
-                    verify_output=output[-20000:],
-                    transcript=json.dumps(session.transcript[-200:])[-40000:],
-                )
-                self._apply_labels(owner, repo, number, tier)
-                self.state.log(f"opened PR {url} (ref {ref_id})", repo=f"{owner}/{repo}")
-                self.state.end_attempt(attempt_id, "pr_opened", url)
-
-                self.notify(
-                    alerts.pr_opened(
-                        f"{owner}/{repo}",
-                        number or 0,
-                        url,
-                        tier,
-                        len(updates),
-                        [f"{u.name}: {u.current or '(unpinned)'} -> {u.latest}" for u in updates],
-                        bump.text[:800],
-                        persona=self.persona,
-                    )
-                )
-
-                if not number:
-                    return result
-
-                # --- drive CI to green ----------------------------------
-                ci_state = self.watch_ci(owner, repo, number)
-                result.ci_state = ci_state
-                self.state.log(f"CI state after push: {ci_state}", repo=f"{owner}/{repo}")
-
-                # A base branch that is already red is not something the bot
-                # should try to fix in the project's code.
-                base_broken = False
-                base_detail = ""
-                if ci_state == "fail":
-                    workflow = self._failing_workflow(owner, repo, number)
-                    base_broken, base_detail = self.base_branch_is_also_failing(
-                        owner, repo, default_branch, workflow=workflow
-                    )
-                    if base_broken:
+                    # --- keep the change in scope ---------------------------
+                    offenders = self._out_of_scope_changes(git, updates)
+                    if offenders:
                         self._safe_log(
-                            f"the base branch is already failing ({base_detail}) - "
-                            "not touching the project's code",
+                            "reverting edits that are not part of the update set: "
+                            + "; ".join(f"{o['file']}: {o['line'][:60]}" for o in offenders[:5]),
                             repo=f"{owner}/{repo}",
                         )
+                        git.revert_lines(offenders)
+                        result.changes = git.changed_files()
+                        if not result.changes:
+                            result.status = "skipped"
+                            result.detail = "the model only made out-of-scope changes"
+                            self.state.end_attempt(attempt_id, "skipped", result.detail)
+                            return result
 
-                for _ in range(max(0, self.cfg.max_attempts - 1)):
-                    if ci_state != "fail" or base_broken:
-                        break
-                    self.state.log(
-                        "CI failed - feeding logs back to the model", repo=f"{owner}/{repo}"
-                    )
-                    note = self.fix_ci(
-                        owner, repo, number, branch, default_branch, updates, git, session
-                    )
-                    self.state.bump_ci_attempts(f"{owner}/{repo}", number)
-                    if "no changes" in note:
-                        break
-                    ci_state = self.watch_ci(owner, repo, number)
-                    result.ci_state = ci_state
-                    self.state.log(f"CI state after fix: {ci_state}", repo=f"{owner}/{repo}")
-
-                if ci_state == "fail":
-                    detail = (
-                        f"The base branch is already failing the same checks "
-                        f"({base_detail}), so this is not caused by the update."
-                        if base_broken
-                        else "The bot could not fix it."
-                    )
-                    self.notify(
-                        alerts.ci_failed(
-                            f"{owner}/{repo}",
-                            number,
-                            url,
-                            tier,
-                            detail,
-                            persona=self.persona,
+                    # --- local verify ----------------------------------------
+                    ok, output = self.run_verify(git, result.repo, session)
+                    if not ok:
+                        self.state.log(
+                            "local verification failed before migration",
+                            repo=result.repo,
+                            data={"output": output[-19000:]},
                         )
-                    )
-
-                # --- auto-merge (tier A only) ----------------------------
-                if not dry_run:
-                    ok, why = self.may_auto_merge(owner, repo, number, tier)
-                    if ok:
-                        self.gh.pr_merge(owner, repo, number)
-                        self.state.record_pr(
-                            f"{owner}/{repo}",
-                            number,
-                            state="merged",
-                            auto_merged=1,
-                            updated_at=time.time(),
+                        migrate_prompt = load_prompt(
+                            "migrate",
+                            UPDATES=render_update_list(updates),
+                            ERROR=output[-15000:],
+                            IMPACT=impact or "No pre-update assessment available.",
                         )
-                        self.state.log(f"auto-merged PR #{number}", repo=f"{owner}/{repo}")
-                        result.detail = "auto-merged"
+                        mig = session.prompt(migrate_prompt, timeout=7200, idle_timeout=600)
+                        work_notes += "\n\nMigration:\n" + mig.text
+                        self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
+                        ok, output = self.run_verify(git, result.repo, session)
+                    if not ok:
+                        # A recipe that no longer works must not be trusted again:
+                        # mark it stale so the next run works it out afresh.
+                        self._invalidate_recipe(owner, repo, output)
+                        result.status = "failed"
+                        result.detail = "local verification still failing after migration"
+                        self.state.end_attempt(attempt_id, "failed", result.detail)
                         self.notify(
-                            alerts.auto_merged(
-                                f"{owner}/{repo}", number, url, tier, persona=self.persona
+                            alerts.failure(
+                                f"{owner}/{repo}",
+                                "local verification",
+                                output[-1500:],
+                                persona=self.persona,
                             )
                         )
-                    else:
-                        self.state.log(f"not auto-merged: {why}", repo=f"{owner}/{repo}")
-                        result.detail = why
-                        if tier == "A" and ci_state == "pass":
-                            self.notify(
-                                alerts.ready_to_merge(
-                                    f"{owner}/{repo}", number, url, tier, persona=self.persona
-                                )
+                        return result
+
+                    if dry_run:
+                        result.status = "skipped"
+                        result.detail = (
+                            f"dry run - would open PR with {len(result.changes)} changed files"
+                        )
+                        self.state.log(result.detail, repo=f"{owner}/{repo}")
+                        self.state.end_attempt(attempt_id, "dry-run", result.detail)
+                        return result
+
+                    # --- leak check ------------------------------------------
+                    leak = self._check_for_leaks(git, result.changes)
+                    if leak["blocking"]:
+                        result.status = "failed"
+                        result.detail = "blocked: " + leak["summary"]
+                        self.state.log(
+                            result.detail, repo=f"{owner}/{repo}", level="error", data=leak
+                        )
+                        self.state.end_attempt(attempt_id, "failed", result.detail)
+                        return result
+
+                    # --- reviewer-facing note ---------------------------------
+                    public_note = self._public_note(bump.text)
+                    try:
+                        note_prompt = load_prompt(
+                            "prnote",
+                            UPDATES=render_update_list(updates),
+                            WORK=sanitize.scrub_text(work_notes)[:8000],
+                        )
+                        note_result = session.prompt(note_prompt, timeout=900)
+                        raw_note = note_result.text.strip()
+                        candidate = sanitize.scrub_text(raw_note)
+                        if candidate.upper().startswith("NONE"):
+                            candidate = ""
+                        # If the note needed scrubbing, or a marker survived it,
+                        # publish nothing rather than something mangled.
+                        if candidate != raw_note or sanitize.contains_leak(candidate):
+                            self.log(
+                                "dropping the note: it mentions the tooling", repo=f"{owner}/{repo}"
                             )
-                elif ci_state == "fail":
+                            candidate = ""
+                        if len(candidate) > 20:
+                            public_note = candidate
+                    except Exception as exc:  # noqa: BLE001
+                        self.log(f"note generation failed: {exc}", repo=f"{owner}/{repo}")
+                        public_note = public_note or ""
+
+                    # --- commit + push --------------------------------------
+                    message = self.commit_message(tier, updates, public_note)
+                    git.commit(message)
+                    try:
+                        git.push(branch)
+                    except GitError as exc:
+                        # A branch of the same name may already exist on the
+                        # remote: an earlier run that pushed and died before
+                        # opening the PR, or a PR that was closed unmerged. A PR
+                        # that appeared meanwhile makes this attempt a duplicate.
+                        duplicate = self.open_pr_for_branch(owner, repo, branch)
+                        if duplicate:
+                            result.status = "skipped"
+                            result.detail = (
+                                f"PR #{duplicate.get('number')} is already open for this update"
+                            )
+                            self.state.log(result.detail, repo=f"{owner}/{repo}")
+                            self.state.end_attempt(attempt_id, "skipped", result.detail)
+                            return result
+                        if "! [rejected]" not in str(exc):
+                            raise
+                        # No PR refers to the leftover branch and its history has
+                        # diverged from ours. It may be a person's work - commits
+                        # carry the user's own identity either way - so it is not
+                        # ours to overwrite. Push under the next free name.
+                        replacement = self._next_free_branch(git, branch)
+                        if replacement is None:
+                            raise
+                        self.log(f"branch {branch} exists on the remote; pushing {replacement}")
+                        git.create_branch(replacement)
+                        git.push(replacement)
+                        branch = replacement
+
+                    # --- open PR --------------------------------------------
+                    ref_id = _make_ref_id()
+                    title = PR_TITLES[tier].format(n=len(updates))
+                    body = self.pr_body(
+                        updates, f"{owner}/{repo}", tier, public_note, ref_id, impact
+                    )
+                    pr = self.gh.open_pr(owner, repo, title, body, branch, default_branch)
+                    url = pr.get("url", "")
+                    number = self._pr_number(url)
+                    result.status = "pr_opened"
+                    result.pr_number = number
+                    result.pr_url = url
+                    self.state.record_pr(
+                        f"{owner}/{repo}",
+                        number or 0,
+                        tier=tier,
+                        title=title,
+                        url=url,
+                        branch=branch,
+                        state="open",
+                    )
+                    # Everything that must not appear in the PR lives here.
+                    self.state.record_pr_details(
+                        f"{owner}/{repo}",
+                        number or 0,
+                        ref_id=ref_id,
+                        tier=tier,
+                        model=model.model,
+                        base_url=model.base_url,
+                        branch=branch,
+                        updates=json.dumps([u.as_dict() for u in updates]),
+                        agent_notes=(
+                            f"Pre-update impact:\n{impact}\n\n" if impact is not None else ""
+                        )
+                        + work_notes,
+                        verify_output=output[-20000:],
+                        transcript=json.dumps(session.transcript[-200:])[-40000:],
+                    )
+                    self._apply_labels(owner, repo, number, tier)
+                    self.state.log(f"opened PR {url} (ref {ref_id})", repo=f"{owner}/{repo}")
+                    self.state.end_attempt(attempt_id, "pr_opened", url)
+
                     self.notify(
-                        alerts.ci_failed(
+                        alerts.pr_opened(
                             f"{owner}/{repo}",
                             number or 0,
                             url,
                             tier,
-                            "CI failed and the bot could not fix it.",
+                            len(updates),
+                            [
+                                f"{u.name}: {u.current or '(unpinned)'} -> {u.latest}"
+                                for u in updates
+                            ],
+                            bump.text[:800],
+                            persona=self.persona,
                         )
                     )
-                return result
-            except Exception:
-                try:
-                    self.state.log(
-                        "pipeline session failed",
-                        repo=result.repo,
-                        level="error",
-                        data={"diagnostics": session.diagnostics()},
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    self._safe_log(
-                        f"could not save pipeline diagnostics: {exc}",
-                        repo=result.repo,
-                        level="error",
-                    )
-                raise
-            finally:
-                session.close()
+
+                    if not number:
+                        return result
+
+                    # --- drive CI to green ----------------------------------
+                    ci_state = self.watch_ci(owner, repo, number)
+                    result.ci_state = ci_state
+                    self.state.log(f"CI state after push: {ci_state}", repo=f"{owner}/{repo}")
+
+                    # A base branch that is already red is not something the bot
+                    # should try to fix in the project's code.
+                    base_broken = False
+                    base_detail = ""
+                    if ci_state == "fail":
+                        workflow = self._failing_workflow(owner, repo, number)
+                        base_broken, base_detail = self.base_branch_is_also_failing(
+                            owner, repo, default_branch, workflow=workflow
+                        )
+                        if base_broken:
+                            self._safe_log(
+                                f"the base branch is already failing ({base_detail}) - "
+                                "not touching the project's code",
+                                repo=f"{owner}/{repo}",
+                            )
+
+                    for _ in range(max(0, self.cfg.max_attempts - 1)):
+                        if ci_state != "fail" or base_broken:
+                            break
+                        self.state.log(
+                            "CI failed - feeding logs back to the model", repo=f"{owner}/{repo}"
+                        )
+                        note = self.fix_ci(
+                            owner, repo, number, branch, default_branch, updates, git, session
+                        )
+                        self.state.bump_ci_attempts(f"{owner}/{repo}", number)
+                        if "no changes" in note:
+                            break
+                        ci_state = self.watch_ci(owner, repo, number)
+                        result.ci_state = ci_state
+                        self.state.log(f"CI state after fix: {ci_state}", repo=f"{owner}/{repo}")
+
+                    if ci_state == "fail":
+                        detail = (
+                            f"The base branch is already failing the same checks "
+                            f"({base_detail}), so this is not caused by the update."
+                            if base_broken
+                            else "The bot could not fix it."
+                        )
+                        self.notify(
+                            alerts.ci_failed(
+                                f"{owner}/{repo}",
+                                number,
+                                url,
+                                tier,
+                                detail,
+                                persona=self.persona,
+                            )
+                        )
+
+                    # --- auto-merge (tier A only) ----------------------------
+                    if not dry_run:
+                        ok, why = self.may_auto_merge(owner, repo, number, tier)
+                        if ok:
+                            self.gh.pr_merge(owner, repo, number)
+                            self.state.record_pr(
+                                f"{owner}/{repo}",
+                                number,
+                                state="merged",
+                                auto_merged=1,
+                                updated_at=time.time(),
+                            )
+                            self.state.log(f"auto-merged PR #{number}", repo=f"{owner}/{repo}")
+                            result.detail = "auto-merged"
+                            self.notify(
+                                alerts.auto_merged(
+                                    f"{owner}/{repo}", number, url, tier, persona=self.persona
+                                )
+                            )
+                        else:
+                            self.state.log(f"not auto-merged: {why}", repo=f"{owner}/{repo}")
+                            result.detail = why
+                            if tier == "A" and ci_state == "pass":
+                                self.notify(
+                                    alerts.ready_to_merge(
+                                        f"{owner}/{repo}", number, url, tier, persona=self.persona
+                                    )
+                                )
+                    elif ci_state == "fail":
+                        self.notify(
+                            alerts.ci_failed(
+                                f"{owner}/{repo}",
+                                number or 0,
+                                url,
+                                tier,
+                                "CI failed and the bot could not fix it.",
+                            )
+                        )
+                    return result
+                except Exception:
+                    try:
+                        self.state.log(
+                            "pipeline session failed",
+                            repo=result.repo,
+                            level="error",
+                            data={"diagnostics": session.diagnostics()},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._safe_log(
+                            f"could not save pipeline diagnostics: {exc}",
+                            repo=result.repo,
+                            level="error",
+                        )
+                    raise
+                finally:
+                    session.close()
+
         except (GitError, Exception) as exc:  # noqa: BLE001 - surfaced to the caller
             import traceback
 
@@ -1798,109 +1819,113 @@ class Worker:
         base = view.get("baseRefName") or self.gh.default_branch(owner, name)
         if not dry_run:
             self.state.record_pr(repo, number, conflict_attempts=attempts + 1)
-        git = self.prepare_clone(owner, name, base)
-        setup = self.ensure_build_setup(owner, name, base, git)
-        if setup["status"] != "ok":
-            return f"conflict repair blocked by build setup: {setup['status']}"
-        if not git.fetch_branch(base) or not git.fetch_branch(branch):
-            return "conflict repair could not fetch the base or PR branch"
-        git.create_branch(branch, start_point=f"origin/{branch}")
-        original_head = git.commit_sha()
-        model = self.cfg.model_for("migrate")
-        session = PiSession(
-            cwd=git.path,
-            model=PiModel(
-                f"depsbot-{model.provider}",
-                model.base_url,
-                model.model,
-                model.context,
-                model.max_tokens,
-                model.reasoning,
-            ),
-            agent_dir=self.cfg.agent_dir,
-            allow_network=self.cfg.allow_network,
-            scrub_env=self.cfg.scrub_env,
-            extra_secrets=self._notify_secret_names(),
-            allow_containers=self.cfg.allow_containers,
-            container_runtime=self.cfg.container_runtime,
-        )
-        pushed = False
-        try:
-            conflicts = git.merge_base_branch(base)
-            if not git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip():
-                return "base already incorporated; mergeability will refresh on GitHub"
-            merge_head = git.commit_sha("MERGE_HEAD")
-            session.start()
-            if conflicts:
-                exclude = [f":(exclude,literal){path}" for path in conflicts]
-                other_changes = git._run("diff", "HEAD", "--", ".", *exclude)
-                changed_before = set(git.changed_files())
-                reply = session.prompt(
-                    load_prompt(
-                        "conflicts",
-                        BASE=base,
-                        FILES="\n".join(conflicts),
-                        UPDATES=json.dumps(targets, indent=2),
-                    ),
-                    timeout=3600,
-                    idle_timeout=600,
+        with self.prepare_clone(owner, name, base) as git:
+            setup = self.ensure_build_setup(owner, name, base, git)
+            if setup["status"] != "ok":
+                return f"conflict repair blocked by build setup: {setup['status']}"
+            if not git.fetch_branch(base) or not git.fetch_branch(branch):
+                return "conflict repair could not fetch the base or PR branch"
+            git.create_branch(branch, start_point=f"origin/{branch}")
+            original_head = git.commit_sha()
+            model = self.cfg.model_for("migrate")
+            session = PiSession(
+                cwd=git.path,
+                model=PiModel(
+                    f"depsbot-{model.provider}",
+                    model.base_url,
+                    model.model,
+                    model.context,
+                    model.max_tokens,
+                    model.reasoning,
+                ),
+                agent_dir=self.cfg.agent_dir,
+                allow_network=self.cfg.allow_network,
+                scrub_env=self.cfg.scrub_env,
+                extra_secrets=self._notify_secret_names(),
+                allow_containers=self.cfg.allow_containers,
+                container_runtime=self.cfg.container_runtime,
+            )
+            pushed = False
+            try:
+                conflicts = git.merge_base_branch(base)
+                if not git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip():
+                    return "base already incorporated; mergeability will refresh on GitHub"
+                merge_head = git.commit_sha("MERGE_HEAD")
+                session.start()
+                if conflicts:
+                    exclude = [f":(exclude,literal){path}" for path in conflicts]
+                    other_changes = git._run("diff", "HEAD", "--", ".", *exclude)
+                    changed_before = set(git.changed_files())
+                    reply = session.prompt(
+                        load_prompt(
+                            "conflicts",
+                            BASE=base,
+                            FILES="\n".join(conflicts),
+                            UPDATES=json.dumps(targets, indent=2),
+                        ),
+                        timeout=3600,
+                        idle_timeout=600,
+                    )
+                    if _parse_report(reply.text).get("RESOLVED", "").lower() != "yes":
+                        raise PiError("conflict resolution was not completed")
+                    if (
+                        git.commit_sha() != original_head
+                        or git._run(
+                            "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
+                        ).strip()
+                        != merge_head
+                    ):
+                        raise PiError("conflict resolution modified merge ancestry")
+                    if git._run("diff", "HEAD", "--", ".", *exclude) != other_changes or set(
+                        git.changed_files()
+                    ) - changed_before - set(conflicts):
+                        raise PiError("conflict resolution edited files outside the conflict set")
+                git.stage_all()
+                # Reject unresolved markers, including a model claiming success with markers left.
+                # Whitespace from the base is not ours to rewrite; only marker errors block.
+                git._run(
+                    "-c",
+                    "core.whitespace=-trailing-space,-space-before-tab",
+                    "diff",
+                    "--cached",
+                    "--check",
                 )
-                if _parse_report(reply.text).get("RESOLVED", "").lower() != "yes":
-                    raise PiError("conflict resolution was not completed")
+                if conflicts and sanitize.scan_diff(git._run("diff", "--cached", "--", *conflicts)):
+                    raise PiError("conflict resolution contains internal tooling references")
+                verified_tree = git._run("write-tree").strip()
+                ok, output = self.run_verify(git, repo, session)
+                self.state.log("conflict repair verification", repo=repo, data={"output": output})
+                if not ok:
+                    raise PiError(
+                        "conflict resolution failed local verification: " + output[-1500:]
+                    )
                 if (
                     git.commit_sha() != original_head
                     or git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip()
                     != merge_head
+                    or git._run("write-tree").strip() != verified_tree
+                    or git.diff().strip()
+                    or git._run("ls-files", "--others", "--exclude-standard").strip()
                 ):
-                    raise PiError("conflict resolution modified merge ancestry")
-                if git._run("diff", "HEAD", "--", ".", *exclude) != other_changes or set(
-                    git.changed_files()
-                ) - changed_before - set(conflicts):
-                    raise PiError("conflict resolution edited files outside the conflict set")
-            git.stage_all()
-            # Reject unresolved markers, including a model claiming success with markers left.
-            # Whitespace from the base is not ours to rewrite; only marker errors block.
-            git._run(
-                "-c",
-                "core.whitespace=-trailing-space,-space-before-tab",
-                "diff",
-                "--cached",
-                "--check",
-            )
-            if conflicts and sanitize.scan_diff(git._run("diff", "--cached", "--", *conflicts)):
-                raise PiError("conflict resolution contains internal tooling references")
-            verified_tree = git._run("write-tree").strip()
-            ok, output = self.run_verify(git, repo, session)
-            self.state.log("conflict repair verification", repo=repo, data={"output": output})
-            if not ok:
-                raise PiError("conflict resolution failed local verification: " + output[-1500:])
-            if (
-                git.commit_sha() != original_head
-                or git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip()
-                != merge_head
-                or git._run("write-tree").strip() != verified_tree
-                or git.diff().strip()
-                or git._run("ls-files", "--others", "--exclude-standard").strip()
-            ):
-                raise PiError("verification modified the resolved tree")
-            if dry_run:
-                return "conflicts resolved and verified (dry run); no push"
-            message = sanitize.scrub_text("chore: merge base branch updates")
-            if sanitize.contains_leak(message):
-                raise PiError("unsafe merge commit message")
-            git.commit(message)
-            git.push(branch)
-            pushed = True
-            self.state.record_pr(
-                repo, number, conflict_attempts=0, checks_state="pending", mergeable="UNKNOWN"
-            )
-            return "base merged and conflicts resolved; waiting for CI on the new commit"
-        finally:
-            try:
-                session.close()
+                    raise PiError("verification modified the resolved tree")
+                if dry_run:
+                    return "conflicts resolved and verified (dry run); no push"
+                message = sanitize.scrub_text("chore: merge base branch updates")
+                if sanitize.contains_leak(message):
+                    raise PiError("unsafe merge commit message")
+                git.commit(message)
+                git.push(branch)
+                pushed = True
+                self.state.record_pr(
+                    repo, number, conflict_attempts=0, checks_state="pending", mergeable="UNKNOWN"
+                )
+                return "base merged and conflicts resolved; waiting for CI on the new commit"
             finally:
-                if not pushed:
-                    git.clean(ref=original_head)
+                try:
+                    session.close()
+                finally:
+                    if not pushed:
+                        git.clean(ref=original_head)
 
     def monitor_pr(self, repo_row, dry_run: bool | None = None) -> str:
         """One monitoring pass over an open PR: CI, reviews, mergeability.
@@ -1981,61 +2006,65 @@ class Worker:
             if base_broken:
                 return f"ci=fail, the base branch is already failing ({base_detail})"
 
-        git = self.prepare_clone(owner, name, default_branch)
-        # The deps branch only exists on the remote - the clone is shallow and
-        # fetched the default branch only.
-        if not git.fetch_branch(branch):
-            return f"branch {branch} not found on the remote"
-        git.create_branch(branch, start_point=f"origin/{branch}")
+        with self.prepare_clone(owner, name, default_branch) as git:
+            # The deps branch only exists on the remote - the clone is shallow and
+            # fetched the default branch only.
+            if not git.fetch_branch(branch):
+                return f"branch {branch} not found on the remote"
+            git.create_branch(branch, start_point=f"origin/{branch}")
 
-        model = self.cfg.model_for("fixci" if ci_state == "fail" else "review")
-        spec = PiModel(
-            name=f"depsbot-{model.provider}",
-            base_url=model.base_url,
-            model=model.model,
-            context=model.context,
-            max_tokens=model.max_tokens,
-            reasoning=model.reasoning,
-        )
-        updates = self._updates_for_pr(repo, tier)
-        session = PiSession(
-            cwd=git.path,
-            model=spec,
-            agent_dir=self.cfg.agent_dir,
-            allow_network=self.cfg.allow_network,
-            scrub_env=self.cfg.scrub_env,
-            allow_containers=self.cfg.allow_containers,
-            container_runtime=self.cfg.container_runtime,
-        )
-        try:
-            session.start()
-            if ci_state == "fail":
-                note = self.fix_ci(
-                    owner, name, number, branch, default_branch, updates, git, session
-                )
-                self.state.bump_ci_attempts(repo, number)
-                if dry_run:
-                    return f"ci=fail (dry run) {note[:120]}"
-                new_state = self.watch_ci(owner, name, number, timeout_s=1800)
-                self.state.record_pr(repo, number, checks_state=new_state, updated_at=time.time())
-                return f"ci was fail, now {new_state}"
-            if comments:
-                changed, note = self.address_reviews(
-                    owner, name, number, branch, default_branch, updates, git, session, fresh
-                )
-                if dry_run:
-                    return f"review (dry run): {note[:160]}"
-                for c in fresh:
-                    self.state.mark_comment_processed(repo, number, str(c.get("id")), note[:200])
-                if not changed:
-                    self._acknowledge_comments(owner, name, fresh)
-                    return f"reviewed {len(fresh)} comment(s): {note[:160]}"
-                self._resolve_threads(owner, name, number, fresh)
-                self._post_review_reply(owner, name, number, note, fresh)
-                return f"addressed {len(fresh)} comment(s): {note[:160]}"
-            return f"ci={ci_state}"
-        finally:
-            session.close()
+            model = self.cfg.model_for("fixci" if ci_state == "fail" else "review")
+            spec = PiModel(
+                name=f"depsbot-{model.provider}",
+                base_url=model.base_url,
+                model=model.model,
+                context=model.context,
+                max_tokens=model.max_tokens,
+                reasoning=model.reasoning,
+            )
+            updates = self._updates_for_pr(repo, tier)
+            session = PiSession(
+                cwd=git.path,
+                model=spec,
+                agent_dir=self.cfg.agent_dir,
+                allow_network=self.cfg.allow_network,
+                scrub_env=self.cfg.scrub_env,
+                allow_containers=self.cfg.allow_containers,
+                container_runtime=self.cfg.container_runtime,
+            )
+            try:
+                session.start()
+                if ci_state == "fail":
+                    note = self.fix_ci(
+                        owner, name, number, branch, default_branch, updates, git, session
+                    )
+                    self.state.bump_ci_attempts(repo, number)
+                    if dry_run:
+                        return f"ci=fail (dry run) {note[:120]}"
+                    new_state = self.watch_ci(owner, name, number, timeout_s=1800)
+                    self.state.record_pr(
+                        repo, number, checks_state=new_state, updated_at=time.time()
+                    )
+                    return f"ci was fail, now {new_state}"
+                if comments:
+                    changed, note = self.address_reviews(
+                        owner, name, number, branch, default_branch, updates, git, session, fresh
+                    )
+                    if dry_run:
+                        return f"review (dry run): {note[:160]}"
+                    for c in fresh:
+                        self.state.mark_comment_processed(
+                            repo, number, str(c.get("id")), note[:200]
+                        )
+                    if not changed:
+                        self._acknowledge_comments(owner, name, fresh)
+                        return f"reviewed {len(fresh)} comment(s): {note[:160]}"
+                    self._resolve_threads(owner, name, number, fresh)
+                    self._post_review_reply(owner, name, number, note, fresh)
+                    return f"addressed {len(fresh)} comment(s): {note[:160]}"
+                return f"ci={ci_state}"
+            finally:
+                session.close()
 
     def maybe_auto_merge(self, owner: str, repo: str, number: int, tier: str) -> str:
         """Merge a pull request if the policy allows it."""

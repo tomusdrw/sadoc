@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from sadoc import doctor
 
 
@@ -77,7 +79,7 @@ def test_doctor_reports_agent_failure_without_claiming_a_failed_repair(tmp_path,
     st = State(tmp_path / "state.db")
     try:
         worker = Worker(Config(), gh, st)
-        worker.prepare_clone = Mock(return_value=Mock(path=tmp_path))
+        worker.prepare_clone = Mock(return_value=nullcontext(Mock(path=tmp_path)))
         result = worker.doctor_repo("o", "r")
         assert result["state"] == "agent_failed"
         assert "Connection refused" in result["detail"]

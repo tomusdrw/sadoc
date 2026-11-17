@@ -1,5 +1,6 @@
 import json
 import subprocess
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -68,7 +69,7 @@ def project(tmp_path, monkeypatch):
         repos={"o/r": {"verify": 'test "$(cat conflict.txt)" = resolved && test -f main-only.txt'}}
     )
     worker = Worker(cfg, gh, state)
-    monkeypatch.setattr(worker, "prepare_clone", lambda *a: git)
+    monkeypatch.setattr(worker, "prepare_clone", lambda *a: nullcontext(git))
     worker._current_checks = Mock(return_value=[])
     worker.base_branch_is_also_failing = Mock(return_value=(False, ""))
     worker.fix_ci = Mock(side_effect=AssertionError("must not repair stale CI before merging"))
