@@ -279,15 +279,31 @@ class Worker:
 
     # -------------------------------------------------------------- clone
     def existing_deps_pr(self, owner: str, repo: str) -> dict | None:
-        """An open PR that sadoc already opened for this repo."""
+        """An open PR on a dependency branch of this repo.
+
+        Sadoc names its branches `deps/<package>-<version>`; a person's
+        dependency branch may use the same shape. Either way, an open PR on
+        such a branch is one this run should not compete with.
+        """
         try:
             prs = self.gh.pr_list(owner, repo, state="open")
         except Exception:
             return None
         for pr in prs:
             branch = pr.get("headRefName") or ""
-            if branch.startswith(f"deps/{repo}/"):
+            if branch.startswith("deps/"):
                 return pr
+        return None
+
+    def open_pr_for_branch(self, owner: str, repo: str, branch: str) -> dict | None:
+        """The open PR whose head is exactly this branch, if there is one."""
+        try:
+            prs = self.gh.pr_list(owner, repo, state="open")
+            for pr in prs:
+                if (pr.get("headRefName") or "") == branch:
+                    return pr
+        except Exception:  # noqa: BLE001 - a broken listing must not stop the run
+            return None
         return None
 
     def prepare_clone(self, owner: str, repo: str, branch: str) -> Git:
@@ -647,6 +663,15 @@ class Worker:
             return f"deps/{package}-{version}"
         return f"deps/{package}"
 
+    @staticmethod
+    def _next_free_branch(git: Git, branch: str) -> str | None:
+        """The first unused branch-2 .. branch-9 on the remote, or None."""
+        for n in range(2, 10):
+            candidate = f"{branch}-{n}"
+            if not git.has_remote_branch(candidate):
+                return candidate
+        return None
+
     def _hand_over_from_dependabot(self, owner: str, repo: str, branch: str) -> None:
         """Switch Dependabot off in a repository this tool takes care of."""
         try:
@@ -989,6 +1014,17 @@ class Worker:
         )
 
         try:
+            # The branch name is deterministic, so an update that already has
+            # an open PR regenerates the same name. Skip before spending a
+            # clone and a model session on work that is already up for review.
+            already = self.open_pr_for_branch(owner, repo, branch)
+            if already:
+                result.status = "skipped"
+                result.detail = f"PR #{already.get('number')} is already open for this update"
+                self.state.log(result.detail, repo=f"{owner}/{repo}")
+                self.state.end_attempt(attempt_id, "skipped", result.detail)
+                return result
+
             git = self.prepare_clone(owner, repo, default_branch)
 
             # --- take over from Dependabot ---------------------------
@@ -1191,7 +1227,35 @@ class Worker:
                 # --- commit + push --------------------------------------
                 message = self.commit_message(tier, updates, public_note)
                 git.commit(message)
-                git.push(branch)
+                try:
+                    git.push(branch)
+                except GitError as exc:
+                    # A branch of the same name may already exist on the
+                    # remote: an earlier run that pushed and died before
+                    # opening the PR, or a PR that was closed unmerged. A PR
+                    # that appeared meanwhile makes this attempt a duplicate.
+                    duplicate = self.open_pr_for_branch(owner, repo, branch)
+                    if duplicate:
+                        result.status = "skipped"
+                        result.detail = (
+                            f"PR #{duplicate.get('number')} is already open for this update"
+                        )
+                        self.state.log(result.detail, repo=f"{owner}/{repo}")
+                        self.state.end_attempt(attempt_id, "skipped", result.detail)
+                        return result
+                    if "! [rejected]" not in str(exc):
+                        raise
+                    # No PR refers to the leftover branch and its history has
+                    # diverged from ours. It may be a person's work - commits
+                    # carry the user's own identity either way - so it is not
+                    # ours to overwrite. Push under the next free name.
+                    replacement = self._next_free_branch(git, branch)
+                    if replacement is None:
+                        raise
+                    self.log(f"branch {branch} exists on the remote; pushing {replacement}")
+                    git.create_branch(replacement)
+                    git.push(replacement)
+                    branch = replacement
 
                 # --- open PR --------------------------------------------
                 ref_id = _make_ref_id()

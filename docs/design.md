@@ -224,6 +224,19 @@ When CI still fails, the failed step logs are fetched with `gh run view
 --log-failed` and handed to the model, which can see the real compiler output.
 The same session is reused, so the model already knows what it changed.
 
+Branch names are deterministic — `deps/<package>-<version>` — so the same
+update always proposes the same branch. That keeps reruns from stacking
+duplicate branches, but it also means the remote may already hold a branch of
+that name: an earlier run that pushed and then died before opening the pull
+request, or a pull request that was closed unmerged. Before any work is done
+the runner skips a repo that already has an open dependency pull request, and
+just before the push it checks the exact branch again. If a push is still
+rejected as a non-fast-forward and no pull request refers to the branch, the
+leftover branch is not ours to overwrite — its commits carry the user's own
+identity, indistinguishable from a person's — so the update is pushed as
+`<branch>-2`, the next free name, instead. The remote branch is never
+force-pushed.
+
 ---
 
 ## 7. Privacy
