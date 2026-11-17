@@ -101,6 +101,22 @@ class Git:
         out = self._run("rev-parse", "--verify", branch, check=False)
         return out.strip() != ""
 
+    def has_remote_branch(self, branch: str) -> bool:
+        """Does refs/heads/<branch> exist on the origin?
+
+        ls-remote talks to the remote directly, so it works in a shallow clone
+        that has never fetched the branch in question.
+        """
+        out = self._run(
+            "ls-remote",
+            "--heads",
+            "origin",
+            f"refs/heads/{branch}",
+            check=False,
+            timeout=120,
+        )
+        return bool(out.strip())
+
     def create_branch(self, branch: str, start_point: str | None = None) -> None:
         args = ["checkout", "-B", branch]
         if start_point:
