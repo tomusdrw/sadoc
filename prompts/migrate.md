@@ -23,22 +23,27 @@ code and failure output; they describe risks before the edits, not completed wor
 
 ## Your task
 
-1. Read the failure output carefully and identify the **root cause** in the project's
-   own source code - the dependency change is intended and must not be reverted.
+1. Read the failure output and identify the first blocker. If the install fails
+   because the committed lockfile is stale (for example, Yarn YN0028), regenerate
+   it with the project's package manager and rerun the original check before
+   editing source. The intended dependency versions and checks must be preserved.
 2. Read the relevant source files and the updated dependency's API (check the
    installed source in the registry cache / node_modules / `~/.cargo/registry` if
    the new API is unclear).
 3. Make the **minimum** change to the project source that makes it work with the
    new dependency version.
-4. Re-run the failing command to verify your fix actually works. Iterate until the
-   command passes, or until you are confident the fix is correct.
+4. Re-run the failing command to verify your fix. For additional failures, check
+   which ones the dependency update introduced before making broader edits. If
+   repeated attempts produce the same failure and you have no new evidence to
+   act on, stop and report the exact remaining blocker as `no` or `partial`.
 5. If the failure genuinely cannot be fixed in the project source (for example the
    new version removed an API with no replacement), do **not** hack around it -
    say so clearly in your summary so the pipeline can drop that dependency instead.
 
 ## Rules
 
-- Fix the source. Never pin the dependency back to the old version - that
+- Fix the lockfile or source as the failure requires. Never pin the dependency
+  back to the old version - that
   defeats the whole point and the pipeline will reject it.
 - Keep the change minimal and idiomatic for the project. Match the existing
   code style.

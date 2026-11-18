@@ -34,8 +34,12 @@ reformat, refactor, or "improve" anything that is not part of these updates.
    the entry there **and** check whether member crates inherit it. Where a member
    pins its own version, update that too.
 7. Regenerate lockfiles so the manifests and lockfiles stay in sync:
-   - `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` -> run the matching install
-     (`npm install --package-lock-only`, `pnpm install --lockfile-only`, ...)
+   - `package-lock.json` / `pnpm-lock.yaml` -> run the matching install
+     (`npm install --package-lock-only`, `pnpm install --lockfile-only`)
+   - `yarn.lock` -> run the project's pinned Yarn from the lockfile root.
+     For Yarn 4, use `YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install --mode=update-lockfile`
+     to regenerate the lockfile. Apply the environment override only to this
+     command. Keep immutable installs enabled in the verification recipe.
    - `Cargo.lock` -> run `cargo update -p <crate> --precise <version>` for each crate,
      or `cargo update` if that fails
    - `poetry.lock` / `uv.lock` -> `poetry lock` / `uv lock`
