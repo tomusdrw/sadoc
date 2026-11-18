@@ -47,6 +47,8 @@ code and failure output; they describe risks before the edits, not completed wor
   defeats the whole point and the pipeline will reject it.
 - Keep the change minimal and idiomatic for the project. Match the existing
   code style.
+- Give diagnostic probes an explicit bash tool timeout of 60 seconds or less.
+  Allow longer for the project's actual build and test commands as needed.
 - Do not touch tests to make them pass unless the test itself relies on the
   changed API (in which case update the test to the new API).
 - Do not disable, skip, or weaken a test.

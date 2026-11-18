@@ -57,6 +57,10 @@ class PiError(RuntimeError):
     pass
 
 
+class PiPromptTimeout(PiError):
+    """A prompt did not settle within its absolute or inactivity deadline."""
+
+
 @dataclass
 class TurnResult:
     text: str = ""
@@ -535,7 +539,7 @@ class PiSession:
             )
             if idle_timeout is not None and idle_s >= idle_timeout:
                 detail += f"; idle for {idle_s:.1f}s"
-            raise PiError(f"pi prompt timed out after {result.duration_s:.1f}s{detail}")
+            raise PiPromptTimeout(f"pi prompt timed out after {result.duration_s:.1f}s{detail}")
         if not result.text.strip():
             raise PiError("pi returned an empty response")
         if result.stop_reason != "stop":

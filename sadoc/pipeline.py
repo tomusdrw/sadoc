@@ -33,7 +33,7 @@ from . import (
 )
 from .detect import Update
 from .gitops import Git, GitError
-from .piworker import PiError, PiModel, PiSession
+from .piworker import PiError, PiModel, PiPromptTimeout, PiSession
 
 TIER_A = "A"  # patch + minor
 TIER_B = "B"  # major
@@ -605,6 +605,14 @@ class Worker:
             return False, "local verification requires a sandboxed pi session"
         return _execute_recipe(session, cmd)
 
+    def _log_session_failure(self, repo: str, session: PiSession, message: str) -> None:
+        try:
+            self.state.log(
+                message, repo=repo, level="error", data={"diagnostics": session.diagnostics()}
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._safe_log(f"could not save pipeline diagnostics: {exc}", repo=repo, level="error")
+
     # --------------------------------------------------------------- PR
     def pr_body(
         self,
@@ -982,7 +990,8 @@ class Worker:
         Comment lines that mention the tooling are removed; anything in real code
         blocks the PR, because that needs a human to look at.
         """
-        diff = git.diff()
+        git.stage_all()
+        diff = git.diff(staged=True)
         hits = sanitize.scan_diff(diff)
         if not hits:
             return {"hits": [], "blocking": False, "summary": ""}
@@ -1086,16 +1095,20 @@ class Worker:
                     max_tokens=model.max_tokens,
                     reasoning=model.reasoning,
                 )
-                session = PiSession(
-                    cwd=git.path,
-                    model=spec,
-                    agent_dir=self.cfg.agent_dir,
-                    allow_network=self.cfg.allow_network,
-                    scrub_env=self.cfg.scrub_env,
-                    extra_secrets=self._notify_secret_names(),
-                    allow_containers=self.cfg.allow_containers,
-                    container_runtime=self.cfg.container_runtime,
-                )
+
+                def new_session() -> PiSession:
+                    return PiSession(
+                        cwd=git.path,
+                        model=spec,
+                        agent_dir=self.cfg.agent_dir,
+                        allow_network=self.cfg.allow_network,
+                        scrub_env=self.cfg.scrub_env,
+                        extra_secrets=self._notify_secret_names(),
+                        allow_containers=self.cfg.allow_containers,
+                        container_runtime=self.cfg.container_runtime,
+                    )
+
+                session = new_session()
                 try:
                     session.start()
                     # --- assess breaking changes before touching the code ------
@@ -1178,16 +1191,49 @@ class Worker:
                             repo=result.repo,
                             data={"output": output[-19000:]},
                         )
+                    for recovering in (False, True):
+                        if ok:
+                            break
                         migrate_prompt = load_prompt(
                             "migrate",
                             UPDATES=render_update_list(updates),
                             ERROR=output[-15000:],
                             IMPACT=impact or "No pre-update assessment available.",
                         )
-                        mig = session.prompt(migrate_prompt, timeout=7200, idle_timeout=600)
+                        if recovering:
+                            migrate_prompt += (
+                                "\nA previous migration turn timed out. Its edits are still in "
+                                "the checkout. Inspect the current diff and address the remaining "
+                                "failure shown above."
+                            )
+                        try:
+                            mig = session.prompt(
+                                migrate_prompt,
+                                timeout=1800 if recovering else 7200,
+                                idle_timeout=600,
+                            )
+                        except PiPromptTimeout:
+                            if recovering:
+                                raise
+                            self._log_session_failure(
+                                result.repo,
+                                session,
+                                "migration timed out; rechecking existing edits",
+                            )
+                            session.close()
+                            session = new_session()
+                            session.start()
+                            ok, output = self.run_verify(git, result.repo, session)
+                            self.state.log(
+                                "local verification after migration timeout",
+                                repo=result.repo,
+                                data={"ok": ok, "output": output[-19000:]},
+                            )
+                            continue
                         work_notes += "\n\nMigration:\n" + mig.text
                         self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
                         ok, output = self.run_verify(git, result.repo, session)
+                        break
                     if not ok:
                         # A recipe that no longer works must not be trusted again:
                         # mark it stale so the next run works it out afresh.
@@ -1205,6 +1251,7 @@ class Worker:
                         )
                         return result
 
+                    result.changes = git.changed_files()
                     if dry_run:
                         result.status = "skipped"
                         result.detail = (
@@ -1440,19 +1487,7 @@ class Worker:
                         )
                     return result
                 except Exception:
-                    try:
-                        self.state.log(
-                            "pipeline session failed",
-                            repo=result.repo,
-                            level="error",
-                            data={"diagnostics": session.diagnostics()},
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        self._safe_log(
-                            f"could not save pipeline diagnostics: {exc}",
-                            repo=result.repo,
-                            level="error",
-                        )
+                    self._log_session_failure(result.repo, session, "pipeline session failed")
                     raise
                 finally:
                     session.close()
