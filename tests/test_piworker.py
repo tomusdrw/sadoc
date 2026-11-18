@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from sadoc.piworker import PiError, PiModel, PiSession
+from sadoc.piworker import PiError, PiModel, PiPromptTimeout, PiSession
 
 
 def session_with_events(tmp_path, *events):
@@ -516,7 +516,7 @@ def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):
         "assistantMessageEvent": {"type": "text_delta", "delta": "still working"},
     }
     session = timed_session(tmp_path, monkeypatch, [(i, delta) for i in range(1, 100)])
-    with pytest.raises(PiError, match="timed out after 25"):
+    with pytest.raises(PiPromptTimeout, match="timed out after 25"):
         session.prompt("migrate", timeout=25, idle_timeout=10)
     import json
 
