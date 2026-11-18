@@ -125,8 +125,11 @@ inside it dies when that command ends. Start native services and run their check
 in the same command with cleanup, or use a detached container for a service that
 must span discovery commands. Do not reuse old service-control scripts or data
 from the cache as proof of a working environment. SETUP and VERIFY will run together in one bash shell, starting at the repo
-root. Use relative paths and idempotent steps; do not depend on files you manually
-created during exploration. Clean up any local services you start (use a trap).
+root. Use relative paths. Both commands must work on a clean checkout and when
+rerun with artifacts from the previous verification or dependency update. For a
+recipe-owned disposable virtual environment, use `uv venv --clear` or reuse a
+compatible environment and synchronize its dependencies. Do not depend on files
+you manually created during exploration. Clean up any local services you start (use a trap).
 
 **Install into the persistent cache, not into a temporary directory.** The
 environment variable `SADOC_TOOL_CACHE` names a directory that survives between

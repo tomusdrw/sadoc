@@ -290,6 +290,7 @@ def test_owned_discovery_retains_its_report_when_directory_removal_fails(
     session.bash.side_effect = [
         {"success": True, "data": {"exitCode": 0, "output": ""}},
         {"success": True, "data": {"exitCode": 0, "output": "checks passed"}},
+        {"success": True, "data": {"exitCode": 0, "output": "checks passed"}},
     ]
     monkeypatch.setattr("sadoc.pipeline.PiSession", lambda **kw: session)
     monkeypatch.setattr(Git, "commit_sha", lambda *a: "original-commit")

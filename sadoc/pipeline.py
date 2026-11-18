@@ -549,17 +549,18 @@ class Worker:
                 result["status"] = "ok" if ok else "validation_failed"
                 if ok:
                     break
-                result["notes"] = "Recipe failed on a clean checkout: " + output[-1500:]
+                result["notes"] = "Recipe failed validation: " + output[-1500:]
                 if attempt == 2:
                     break
                 self._safe_log(
-                    "repairing the build recipe after clean replay failed", repo=f"{owner}/{repo}"
+                    "repairing the build recipe after validation failed", repo=f"{owner}/{repo}"
                 )
                 # The repair sees the original tree, not artifacts or source edits
                 # from discovery or the failed replay. Replay cleans again below.
                 git.clean(include_ignored=True, ref=original_commit)
                 prompt = (
-                    "The reported recipe failed independent validation on the original clean checkout.\n"
+                    "The reported recipe failed independent validation. It must work both on a "
+                    "clean checkout and when replayed with the artifacts it created.\n"
                     "Repair the setup/verification recipe using the failure below. The checkout has "
                     "been reset and ignored artifacts removed. Return the COMPLETE report again, "
                     "including STATUS, SETUP, VERIFY, PREREQUISITES, CI_ONLY, INPUTS and NOTES. "
@@ -2265,7 +2266,15 @@ def _validate_recipe(session: PiSession, setup: str, verify: str) -> tuple[bool,
     # swallow verification as data and falsely pass, so require quiet syntax.
     if not ok or output != "exit 0\n":
         return False, "Recipe syntax check failed: " + output
-    return _execute_recipe(session, _recipe_command(setup, verify))
+    command = _recipe_command(setup, verify)
+    ok, output = _execute_recipe(session, command)
+    if not ok:
+        return False, output
+    # Verification can run again after migration in the same checkout.
+    ok, repeat_output = _execute_recipe(session, command)
+    if not ok:
+        return False, "Repeat replay failed with artifacts from the first run:\n" + repeat_output
+    return True, repeat_output
 
 
 def _parse_report(report: str, *, shell_fields: bool = False) -> dict[str, str]:

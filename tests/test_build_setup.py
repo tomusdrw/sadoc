@@ -94,6 +94,20 @@ def test_setup_is_saved_and_replayed_in_the_verification_shell(project):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
+def test_discovery_rejects_setup_that_fails_when_repeated(project):
+    worker, git, session = project
+    session.report = REPORT.replace("printf generated > artifact", "mkdir .venv").replace(
+        "test -f artifact", "test -d .venv"
+    )
+
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+
+    assert result["status"] == "validation_failed"
+    assert "Repeat replay failed" in result["verify_output"]
+    assert ".venv" in result["verify_output"]
+    assert not (git.path / ".venv").exists()
+
+
 @pytest.mark.parametrize("field", ["SETUP", "VERIFY"])
 def test_discovery_rejects_fixed_playwright_image_before_replay(project, field):
     worker, git, session = project
@@ -384,7 +398,7 @@ def test_malformed_final_report_gets_tool_free_format_recovery(project, replacem
     result = worker.ensure_build_setup("alice", "repo", "main", git)
     assert result["status"] == status, result["notes"]
     assert len(session.prompts) == 2
-    assert len(session.commands) == (2 if status == "ok" else 0)
+    assert len(session.commands) == (3 if status == "ok" else 0)
     assert not (git.path / "artifact").exists()
 
 
@@ -440,7 +454,7 @@ def test_format_recovery_can_follow_a_malformed_recipe_repair(project):
     result = worker.ensure_build_setup("alice", "repo", "main", git)
     assert result["status"] == "ok", result["notes"]
     assert len(session.prompts) == 3
-    assert len(session.commands) == 4  # syntax and clean replay for each recipe
+    assert len(session.commands) == 5  # syntax and replay for each recipe, plus successful repeat
     assert "original-error" in result["verify_output"]
     assert worker.verify_command("alice/repo")
 
@@ -636,7 +650,7 @@ def test_pipeline_uses_the_qualified_recipe(project):
     result = worker.process_repo("alice", "repo", "A", [], dry_run=True)
     assert result.status == "skipped"
     assert "would open PR" in result.detail
-    assert len(session.commands) == 3  # syntax, clean baseline replay, updated-tree verification
+    assert len(session.commands) == 4  # syntax, two baseline replays, updated-tree verification
     assert worker.state.setup("alice/repo")["status"] == "ok"
 
 

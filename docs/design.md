@@ -389,7 +389,9 @@ Before replay, the combined script is checked with `bash -n` inside the sandbox.
 Syntax diagnostics, including unterminated-heredoc warnings that Bash reports
 with a zero exit code, prevent execution. This does not detect semantic errors
 such as invalid export arguments or wrong script names; real replay still decides
-whether the recipe works.
+whether the recipe works. A successful clean replay is followed by a second
+replay in a fresh shell on the same checkout, with the first run’s artifacts
+still present. This exercises verification retries after migration.
 
 A failed syntax check or replay gets at most two repairs in the discovery session,
 with the exact failed commands and diagnostic output. Reset to the original tree
