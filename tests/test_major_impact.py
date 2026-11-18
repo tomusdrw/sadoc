@@ -78,7 +78,7 @@ def project(tmp_path, monkeypatch):
             if "## Breaking updates to assess" in text:
                 self.events.append("impact")
                 self.prompts["impact"] = text
-                self.prompts["impact_read_only"] = kwargs.get("read_only", False)
+                self.prompts["impact_options"] = kwargs
                 assert not git.changed_files()
                 if isinstance(self.report, Exception):
                     raise self.report
@@ -135,7 +135,11 @@ def test_breaking_updates_are_assessed_before_bump_and_published(project, tier, 
 
     assert result.status == "pr_opened", result.detail
     assert project.session.events == ["impact", "bump", "prnote"]
-    assert project.session.prompts["impact_read_only"] is True
+    assert project.session.prompts["impact_options"] == {
+        "read_only": True,
+        "timeout": 7200,
+        "idle_timeout": 600,
+    }
     body = project.gh.open_pr.call_args.args[3]
     assert ASSESSMENT.strip() in body
     assert "before changes" in body.lower()

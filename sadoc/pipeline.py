@@ -1108,6 +1108,8 @@ class Worker:
                                 UPDATES=render_updates(breaking_updates),
                                 NETWORK="enabled" if self.cfg.allow_network else "disabled",
                             ),
+                            timeout=7200,
+                            idle_timeout=600,
                             read_only=True,
                         )
                         impact = assessment.text.strip()
