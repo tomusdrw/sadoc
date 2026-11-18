@@ -12,6 +12,7 @@ callouts cannot distort the label/value columns.
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass, field
 from itertools import groupby
 
@@ -60,6 +61,62 @@ def _link(url: str, text: str | None = None) -> str:
     )
 
 
+_INLINE = re.compile(
+    r"`(?P<code>[^`\n]+)`"
+    r"|\*\*(?P<strong>(?:`[^`\n]+`|[^*`\n])+?)\*\*"
+    r"|(?<!!)\[(?P<label>[^\[\]\n]+)\]\((?P<url>https?://[^\s()<>]+)\)"
+)
+_FENCE = re.compile(r"^ {0,3}```[\w+-]*[ \t]*\n(.*?)(?:^ {0,3}```[ \t]*$|\Z)", re.M | re.S)
+_LIST_ITEM = re.compile(r"^ {0,3}([-+*]|\d{1,9}[.)])[ \t]+(\S.*)$")
+
+
+def _inline(text: str) -> str:
+    parts = []
+    end = 0
+    for match in _INLINE.finditer(text):
+        parts.append(_e(text[end : match.start()]))
+        if match["code"] is not None:
+            parts.append(f"<code>{_e(match['code'])}</code>")
+        elif match["strong"] is not None:
+            parts.append(f"<strong>{_inline(match['strong'])}</strong>")
+        else:
+            parts.append(_link(match["url"], match["label"]))
+        end = match.end()
+    parts.append(_e(text[end:]))
+    return "".join(parts)
+
+
+def _prose_line(line: str) -> tuple[str, str]:
+    if not line.strip():
+        return "", ""
+    item = _LIST_ITEM.match(line)
+    if item:
+        return ("ol" if item[1][0].isdigit() else "ul"), item[2]
+    return "p", line
+
+
+def _markdown(text: str) -> str:
+    """Render alert prose with a small Markdown subset and escape all source HTML."""
+    parts = []
+    for index, section in enumerate(_FENCE.split(text.replace("\r\n", "\n"))):
+        if index % 2:
+            code = section.removesuffix("\n")
+            parts.append(
+                f'<pre style="margin:0 0 8px;background:{CANVAS};padding:8px;'
+                f'white-space:pre-wrap;overflow-wrap:anywhere">'
+                f"<code>{_e(code)}</code></pre>"
+            )
+            continue
+        for tag, group in groupby(map(_prose_line, section.splitlines()), key=lambda line: line[0]):
+            if tag == "p":
+                prose = "<br>".join(_inline(line) for _, line in group)
+                parts.append(f'<p style="margin:0 0 8px">{prose}</p>')
+            elif tag:
+                items = "".join(f"<li>{_inline(line)}</li>" for _, line in group)
+                parts.append(f'<{tag} style="margin:0 0 8px;padding-left:24px">{items}</{tag}>')
+    return "".join(parts)
+
+
 def render_html(
     title: str,
     blocks: list[Block],
@@ -82,9 +139,9 @@ def render_html(
         if is_detail:
             details = []
             for block in group:
-                value = _e(block.value)
+                value = _inline(block.value)
                 # A bare URL becomes a link.
-                if block.value.startswith("http") and " " not in block.value:
+                if re.fullmatch(r"https?://[^\s<>]+", block.value):
                     value = _link(block.value)
                 details.append(
                     f'<tr><td width="34%" style="padding:7px 16px 7px 0;color:{MUTED};'
@@ -107,7 +164,7 @@ def render_html(
                 rows.append(
                     f'<tr><td style="padding:10px 0;color:{INK};font-size:16px;'
                     f'line-height:1.7;overflow-wrap:anywhere;word-break:break-word">'
-                    f"{_e(block.value)}</td></tr>"
+                    f"{_markdown(block.value)}</td></tr>"
                 )
             elif block.kind == "note":
                 tone = {
@@ -137,7 +194,7 @@ def render_html(
             elif block.kind == "list":
                 items = "".join(
                     f'<li style="margin:0 0 6px;color:{INK};font-size:15px;line-height:1.65">'
-                    f"{_e(item)}</li>"
+                    f"{_inline(item)}</li>"
                     for item in block.items
                 )
                 rows.append(
