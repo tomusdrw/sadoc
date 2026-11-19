@@ -49,11 +49,14 @@ For Playwright suites, use the executable container helper provided at
 with the project's lockfile-enforcing install command, then run:
 
 ```bash
-node "$SADOC_PLAYWRIGHT_RUNNER" -- corepack pnpm test
+node "$SADOC_PLAYWRIGHT_RUNNER" -- npm test
 ```
 
 Replace the command after `--` with this project's actual checks and package
-manager. The helper derives the image tag from the installed `playwright` or
+manager. Run the already-installed test script directly with `npm test` (or
+`npm run <script>`); Playwright images provide Node/npm but do not guarantee
+Corepack is installed. Do not use `corepack pnpm` inside the container. The helper
+derives the image tag from the installed `playwright` or
 `@playwright/test` package. It runs the suite inside that exact version's official
 Ubuntu image, as the current non-root user, with the workspace and tool cache
 mounted. It launches, renders a page in, and closes Chromium, Firefox and WebKit
@@ -99,7 +102,7 @@ address=$(podman inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddre
 test -n "$address"
 export TEST_DATABASE_URL="postgres://TEST_USER:TEST_PASSWORD@$address:5432/TEST_DB"
 node "$SADOC_PLAYWRIGHT_RUNNER" --network "$network" \
-  --postgres-env TEST_DATABASE_URL -- corepack pnpm test
+  --postgres-env TEST_DATABASE_URL -- npm test
 ```
 
 The helper performs an authenticated `SELECT 1` using the project's `pg` package,
