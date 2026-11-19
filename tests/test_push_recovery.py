@@ -168,3 +168,74 @@ def test_a_push_failure_that_is_not_a_rejection_is_not_retried(project):
     assert result.status == "failed"
     project.git.has_remote_branch.assert_not_called()
     project.gh.open_pr.assert_not_called()
+
+
+def _toolchain_group(project):
+    from dataclasses import asdict
+
+    from sadoc import toolchains
+    from sadoc.pipeline import group_updates
+
+    files = {
+        "package.json": '{"packageManager":"yarn@4.9.2","workspaces":["be"]}',
+        "be/package.json": '{"packageManager":"yarn@4.9.2"}',
+        "be/Dockerfile": "RUN yarn set version 4.9.2\n",
+        "yarn.lock": "__metadata:\n  version: 8\n",
+    }
+    for filename, contents in files.items():
+        path = project.git.path / filename
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(contents)
+    project.git.commit("pin Yarn throughout the workspace")
+    [proposal], _ = toolchains.plan(files, resolve=lambda *_: "4.18.1")
+    target = update("yarn", "4.9.2", "4.18.1")
+    target.action = "toolchain"
+    target.kind = target.ecosystem = "toolchain"
+    target.toolchain_plan = {**asdict(proposal), "lockfiles": ["yarn.lock"]}
+    [group] = group_updates([target])
+    return group
+
+
+def test_toolchain_pr_binds_all_pins_and_lockfile_to_verification(project, monkeypatch):
+    group = _toolchain_group(project)
+    original_prompt = project.session.prompt
+
+    def prompt(self, text, **kwargs):
+        if text.startswith("The repository already has"):
+            assert "yarn@4.18.1" in (project.git.path / "be/package.json").read_text()
+            (project.git.path / "yarn.lock").write_text("__metadata:\n  version: 10\n")
+            return TurnResult(text="Lockfile refreshed.", settled=True)
+        return original_prompt(self, text, **kwargs)
+
+    def ensure_setup(*args):
+        assert project.git._run("show", "HEAD:be/Dockerfile") == "RUN yarn set version 4.18.1\n"
+        assert "version: 10" in project.git._run("show", "HEAD:yarn.lock")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(project.session, "prompt", prompt)
+    monkeypatch.setattr(project.worker, "ensure_build_setup", ensure_setup)
+    result = project.worker.process_repo("o", "r", group.tier, group.updates, group=group)
+
+    assert result.status == "pr_opened", result.detail
+    assert set(result.changes) == group.touch
+    assert "human review" in result.detail
+    project.gh.pr_merge.assert_not_called()
+    [saved] = project.worker._updates_for_pr("o/r", group.tier, number=7)
+    assert saved.latest == "4.18.1"
+    assert set(saved.toolchain_plan["lockfiles"]) == {"yarn.lock"}
+
+
+def test_partial_toolchain_update_never_pushes(project):
+    group = _toolchain_group(project)
+
+    def verify(*args):
+        (project.git.path / "be/package.json").write_text('{"packageManager":"yarn@4.9.2"}')
+        return True, "all checks passed"
+
+    project.worker.run_verify.side_effect = verify
+    result = project.worker.process_repo("o", "r", group.tier, group.updates, group=group)
+
+    assert result.status == "failed"
+    assert "incomplete yarn" in result.detail
+    project.git.push.assert_not_called()
+    project.gh.open_pr.assert_not_called()

@@ -29,6 +29,7 @@ from collections import deque
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
+from . import toolchains
 from .gitops import Git
 
 _NAMES = {
@@ -299,7 +300,8 @@ def _conventional(path: str) -> bool:
     relative = PurePosixPath(path)
     name = relative.name.lower()
     return (
-        name.startswith(".")
+        toolchains.is_build_input(path)
+        or name.startswith(".")
         or name in _NAMES
         or any(fnmatchcase(name, pattern) for pattern in _PATTERNS)
         or any(part.startswith(".") or part.lower() in _DIRECTORIES for part in relative.parts)

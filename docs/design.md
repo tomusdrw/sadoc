@@ -544,3 +544,47 @@ Package caches, installed toolchains and container images remain persistent.
 Logs, reports and the SQLite history also have independent lifetimes. Checkout
 cleanup provides no global cache eviction or disk quota. Sandbox scratch files
 already live on per-command tmpfs; they need no host-directory sweep.
+
+## Coordinated toolchain proposals
+
+Toolchain scans recognize exact numeric pins in package-manager fields, version
+files, CI inputs and simple matrices, official images, tool version managers,
+wrapper URLs, and supported bootstrap commands. They preserve the precision
+of each pin. For example, a Node guard pinned to major 22 does not need an edit
+for a new 22.x patch. An image keeps its variant, and the new tag must exist.
+
+Sadoc updates the installation's matched pins and refreshes its lockfiles
+together. It keeps compatibility requirements and older test lanes in place.
+A toolchain proposal requires human review even when dependency patch updates
+are set to auto-merge. An overlapping open PR reserves its claimed files and
+lockfiles until it merges or closes.
+
+A repository can document its release policy, custom literal pins, and tools
+that must move together in a tracked `.sadoc-toolchains.toml` file:
+
+```toml
+[release-line]
+node = "24"
+
+[[pin]]
+path = "deploy/bootstrap.cfg"
+tool = "yarn"
+scope = "."
+pattern = '^YARN_RELEASE=(?P<version>[0-9.]+)$'
+
+[[coordinate]]
+scope = "."
+tools = ["node", "yarn"]
+```
+
+The custom pattern must identify one version occurrence. The scope is the
+repository-relative directory that owns the installation. Custom mappings can
+also mark pins with `role = "compatibility"` or `role = "floating"`. By
+default Sadoc follows supported LTS where the publisher distinguishes it and
+stable releases elsewhere. A `release-line` restricts target selection to the
+listed major or minor line.
+
+Unresolved expressions, ambiguous scopes, integrity-pinned package managers,
+and digest-only images can block a proposal. Where possible, declare the
+literal version source so Sadoc can resolve and review the full set. The scan
+logs the blocker instead of proposing a partial upgrade.
