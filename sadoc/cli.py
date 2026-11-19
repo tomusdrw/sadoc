@@ -250,16 +250,20 @@ def cmd_run(args, cfg, gh, state) -> int:
             break
         repo = entry["repo"]
         _log(f"{repo}: priority {priority}, {len(groups)} group(s)")
-        existing = worker.existing_deps_pr(entry["owner"], entry["name"])
-        if existing:
-            _log(f"{repo}: skipping, PR #{existing.get('number')} is already open")
-            continue
         for group in groups:
             if opened >= budget:
                 break
             if group.tier == pipeline.TIER_B and not cfg.tier_b_major:
                 continue
             if group.tier == pipeline.TIER_C and not cfg.tier_c_security:
+                continue
+            try:
+                existing = worker.overlapping_pr(entry["owner"], entry["name"], group)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{repo}: could not verify open PR file overlap ({exc})")
+                continue
+            if existing:
+                _log(f"{repo}: skipping group, PR #{existing.get('number')} reserves its files")
                 continue
             _log(
                 f"--- {repo} tier {group.tier}: {len(group.updates)} updates "

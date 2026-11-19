@@ -10,11 +10,12 @@ sandboxed clone.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC
@@ -29,6 +30,7 @@ from . import (
     persona,
     release_check,
     sanitize,
+    toolchains,
     workspaces,
 )
 from .detect import Update
@@ -72,7 +74,22 @@ class PrGroup:
     touch: set[str] = field(default_factory=set)
 
     @property
+    def toolchain(self) -> bool:
+        return any(update.action == "toolchain" for update in self.updates)
+
+    @property
+    def identity(self) -> str:
+        keys = set()
+        for update in self.updates:
+            plan = update.toolchain_plan
+            if plan:
+                keys.update(plan.get("coordination") or [json.dumps([plan["scope"], update.name])])
+        return hashlib.sha256(json.dumps(sorted(keys)).encode()).hexdigest()[:16]
+
+    @property
     def manifests(self) -> list[str]:
+        if self.toolchain:
+            return sorted(self.touch)
         return sorted({u.manifest for u in self.updates})
 
 
@@ -89,6 +106,8 @@ _LOCKFILE_FOR = {
 
 def _touch_set(update: Update) -> set[str]:
     """The files an update would modify."""
+    if update.toolchain_plan:
+        return toolchains.footprint(update.toolchain_plan)
     files = {update.manifest}
     lock = _LOCKFILE_FOR.get(update.ecosystem)
     if lock:
@@ -103,6 +122,17 @@ def group_updates(updates: list[Update], security: dict | None = None) -> list[P
     The tier of a group is the highest tier among its members.
     """
     security = security or {}
+    toolchain_updates = [update for update in updates if update.action == "toolchain"]
+    if toolchain_updates and len(toolchain_updates) != len(updates):
+        tool_groups = group_updates(toolchain_updates, security)
+        dependency_groups = group_updates(
+            [update for update in updates if update.action != "toolchain"], security
+        )
+        return (
+            [group for group in dependency_groups if group.tier == TIER_C]
+            + tool_groups
+            + [group for group in dependency_groups if group.tier != TIER_C]
+        )
     # Union-find over the updates, linked by shared files.
     parent = list(range(len(updates)))
 
@@ -121,6 +151,9 @@ def group_updates(updates: list[Update], security: dict | None = None) -> list[P
     for idx, update in enumerate(updates):
         for f in _touch_set(update):
             by_file.setdefault(f, []).append(idx)
+        if update.toolchain_plan:
+            for coordination in update.toolchain_plan.get("coordination", []):
+                by_file.setdefault("\0" + coordination, []).append(idx)
     for indices in by_file.values():
         for other in indices[1:]:
             union(indices[0], other)
@@ -253,13 +286,18 @@ class Worker:
 
     # ------------------------------------------------------------- detect
     def detect_repo(self, owner: str, repo: str, branch: str) -> list[Update]:
-        updates = detect.detect_repo(self.gh, owner, repo, branch)
-        for u in updates:
-            u.bump_kind = u.bump_kind
-        return updates
+        return detect.detect_repo(
+            self.gh,
+            owner,
+            repo,
+            branch,
+            diagnostic=lambda detail: self._safe_log(
+                f"toolchain update blocked: {detail}", repo=f"{owner}/{repo}", level="warning"
+            ),
+        )
 
     def security_advisory_for(self, update: Update) -> dict | None:
-        if not update.current:
+        if not update.current or update.action == "toolchain":
             return None
         advs = self.adv_cache.advisories_for(update.ecosystem, update.name)
         return advisories.is_vulnerable(update.current, advs)
@@ -295,6 +333,43 @@ class Worker:
         for pr in prs:
             branch = pr.get("headRefName") or ""
             if branch.startswith("deps/"):
+                return pr
+        return None
+
+    def overlapping_pr(
+        self, owner: str, repo: str, group: PrGroup, *, files: set[str] | None = None
+    ) -> dict | None:
+        """Find either the same toolchain set or an open PR reserving an edited file."""
+        if not group.toolchain:
+            existing = self.existing_deps_pr(owner, repo)
+            if existing:
+                return existing
+        footprint = group.touch | (files or set())
+        for pr in self.gh.pr_list(owner, repo, state="open"):
+            branch = pr.get("headRefName") or ""
+            if not group.toolchain and not branch.startswith("toolchains/"):
+                continue
+            if group.toolchain and re.fullmatch(rf"toolchains/{group.identity}(?:-\d+)?", branch):
+                return pr
+            changed = self.gh.api_paginate(
+                f"repos/{owner}/{repo}/pulls/{pr['number']}/files", limit=3000
+            )
+            if not changed or len(changed) >= 3000:
+                return pr  # Cannot establish a disjoint edit footprint.
+            actual_paths = {
+                path
+                for entry in changed
+                for path in (entry.get("filename"), entry.get("previous_filename"))
+                if path
+            }
+            if branch.startswith("toolchains/"):
+                targets = self._updates_for_pr(f"{owner}/{repo}", "", number=pr["number"])
+                plans = [u.toolchain_plan for u in targets if u.toolchain_plan]
+                if not plans:
+                    return pr
+                for plan in plans:
+                    actual_paths.update(toolchains.footprint(plan))
+            if footprint & actual_paths:
                 return pr
         return None
 
@@ -354,7 +429,9 @@ class Worker:
         except Exception as exc:  # noqa: BLE001 - never fail a run over bookkeeping
             self._safe_log(f"could not mark the recipe stale: {exc}", repo=key)
 
-    def ensure_build_setup(self, owner: str, repo: str, branch: str, git: Git) -> dict:
+    def ensure_build_setup(
+        self, owner: str, repo: str, branch: str, git: Git, refresh: bool = False
+    ) -> dict:
         """Reuse recipes while their build inputs and sandbox policy are unchanged."""
         key = f"{owner}/{repo}"
         override = self._verify_override(key)
@@ -362,7 +439,8 @@ class Worker:
             return {"status": "ok", "verify_command": override, "notes": "explicit override"}
         row = self.state.setup(key)
         if (
-            row
+            not refresh
+            and row
             and row["status"] == "ok"
             and row["verify_command"]
             and not _fixed_playwright_image(row["setup_command"], row["verify_command"])
@@ -597,8 +675,24 @@ class Worker:
                 ).strip()
         return result
 
-    def run_verify(self, git: Git, repo: str, session: PiSession | None = None) -> tuple[bool, str]:
-        cmd = self.verify_command(repo)
+    def run_verify(
+        self, git: Git, repo: str, session: PiSession | None = None, updates: Sequence[Update] = ()
+    ) -> tuple[bool, str]:
+        plans = [u.toolchain_plan for u in updates if u.toolchain_plan]
+        if plans:
+            preflight = toolchains.verification_commands(git.path, plans)
+            override = self._verify_override(repo)
+            row = self.state.setup(repo) if not override else None
+            if override:
+                cmd = _recipe_command("", preflight + "\n" + override)
+            elif row and row["status"] == "ok" and row["verify_command"]:
+                cmd = _recipe_command(
+                    row["setup_command"], preflight + "\n" + row["verify_command"]
+                )
+            else:
+                cmd = None
+        else:
+            cmd = self.verify_command(repo)
         if not cmd:
             return False, "no validated local verification recipe"
         if session is None:
@@ -629,7 +723,12 @@ class Worker:
         the verification output stay in the local database, and the PR only
         carries a short reference id.
         """
-        lines = ["Updates outdated dependencies in this repository.", ""]
+        intro = (
+            "Updates the repository's coordinated toolchain pins."
+            if any(u.toolchain_plan for u in updates)
+            else "Updates outdated dependencies in this repository."
+        )
+        lines = [intro, ""]
         lines.append("| Package | From | To |")
         lines.append("|---|---|---|")
         for u in updates:
@@ -671,7 +770,9 @@ class Worker:
 
     def commit_message(self, tier: str, updates: list[Update], note: str = "") -> str:
         """A conventional-commit style message, like any other dependency bump."""
-        if tier == TIER_C:
+        if any(u.toolchain_plan for u in updates):
+            head = "chore(toolchain): update pinned tools"
+        elif tier == TIER_C:
             head = "fix(deps): update vulnerable dependencies"
         elif tier == TIER_B:
             head = "feat(deps)!: update dependencies to major versions"
@@ -685,6 +786,8 @@ class Worker:
 
     def branch_name(self, repo: str, tier: str, group: PrGroup | None) -> str:
         """A branch name that looks like any other dependency bump branch."""
+        if group and group.toolchain:
+            return f"toolchains/{group.identity}"
         package = "dependencies"
         version = ""
         if group and group.updates:
@@ -1023,6 +1126,63 @@ class Worker:
             summary = f"removed {len(removed)} comment line(s) mentioning tooling"
         return {"hits": hits, "removed": removed, "blocking": bool(blocking), "summary": summary}
 
+    def _toolchain_paths(self, git: Git) -> list[str]:
+        return [
+            path
+            for path in git._run(
+                "ls-files", "--cached", "--others", "--exclude-standard", "-z"
+            ).split("\0")
+            if path and not detect.should_skip(path)
+        ]
+
+    def _validate_toolchains(self, git: Git, updates: list[Update]) -> None:
+        plans = [u.toolchain_plan for u in updates if u.action == "toolchain"]
+        if not plans:
+            return
+        if any(not plan for plan in plans):
+            raise PiError("coordinated toolchain plan is missing")
+        toolchains.validate(git.path, plans, self._toolchain_paths(git))
+
+    def _prepare_toolchains(self, git: Git, updates: list[Update], session_factory) -> None:
+        plans = [u.toolchain_plan for u in updates]
+        if not all(plans):
+            raise PiError("coordinated toolchain plan is missing")
+        toolchains.validate(git.path, plans, self._toolchain_paths(git), proposed=False)
+        toolchains.protect(git.path, plans, self._toolchain_paths(git))
+        toolchains.apply(git.path, plans)
+        git.stage_all()
+        pinned_tree = git._run("write-tree").strip()
+        lock_paths = sorted({path for plan in plans for path in plan["lockfiles"]})
+        if lock_paths:
+            session = session_factory()
+            try:
+                session.start()
+                session.prompt(
+                    load_prompt(
+                        "toolchains",
+                        TARGETS=render_update_list(updates),
+                        LOCKFILES="\n".join(lock_paths),
+                    ),
+                    timeout=1800,
+                    idle_timeout=600,
+                )
+            finally:
+                session.close()
+            if git._run("write-tree").strip() != pinned_tree:
+                raise PiError("toolchain preparation modified the pinned index")
+            extra = set(git._run("diff", "--name-only", "-z").split("\0")) - set(lock_paths) - {""}
+            extra |= set(
+                git._run("ls-files", "--others", "--exclude-standard", "-z").split("\0")
+            ) - {""}
+            if extra:
+                raise PiError(
+                    f"toolchain preparation edited unexpected files: {', '.join(sorted(extra))}"
+                )
+        self._validate_toolchains(git, updates)
+        if sanitize.scan_diff(git._run("diff", "HEAD")):
+            raise PiError("toolchain update contains internal tooling references")
+        git.commit(self.commit_message(TIER_A, updates, ""))
+
     # ------------------------------------------------------------ process
     def process_repo(
         self,
@@ -1065,27 +1225,6 @@ class Worker:
                 if self.cfg.disable_dependabot:
                     self._hand_over_from_dependabot(owner, repo, default_branch)
 
-                # --- discover and validate the repository's local build recipe ---
-                setup = self.ensure_build_setup(owner, repo, default_branch, git)
-                if setup["status"] != "ok":
-                    detail = setup["notes"] or setup["status"]
-                    if setup.get("prerequisites"):
-                        detail += f" (needs: {setup['prerequisites']})"
-                    result.status = "failed"
-                    result.detail = f"build discovery ({setup['status']}): {detail}"
-                    self._safe_log(result.detail, repo=result.repo, level="error")
-                    self.state.end_attempt(attempt_id, "failed", result.detail)
-                    self.notify(
-                        alerts.failure(
-                            result.repo, "build discovery", result.detail, persona=self.persona
-                        )
-                    )
-                    return result
-                if setup.get("ci_only"):
-                    self._safe_log(f"Checks requiring CI: {setup['ci_only']}", repo=result.repo)
-                git.create_branch(branch)
-                result.changes = []
-
                 model = self.cfg.model_for("migrate" if breaking_updates else "bump")
                 spec = PiModel(
                     name=f"depsbot-{model.provider}",
@@ -1108,12 +1247,44 @@ class Worker:
                         container_runtime=self.cfg.container_runtime,
                     )
 
+                is_toolchain = bool(group and group.toolchain)
+                base_commit = git.commit_sha() if is_toolchain else ""
+                if is_toolchain:
+                    git.create_branch(branch)
+                    self._prepare_toolchains(git, updates, new_session)
+
+                # --- discover and validate the repository's local build recipe ---
+                setup = (
+                    self.ensure_build_setup(owner, repo, default_branch, git, True)
+                    if is_toolchain
+                    else self.ensure_build_setup(owner, repo, default_branch, git)
+                )
+                if setup["status"] != "ok":
+                    detail = setup["notes"] or setup["status"]
+                    if setup.get("prerequisites"):
+                        detail += f" (needs: {setup['prerequisites']})"
+                    result.status = "failed"
+                    result.detail = f"build discovery ({setup['status']}): {detail}"
+                    self._safe_log(result.detail, repo=result.repo, level="error")
+                    self.state.end_attempt(attempt_id, "failed", result.detail)
+                    self.notify(
+                        alerts.failure(
+                            result.repo, "build discovery", result.detail, persona=self.persona
+                        )
+                    )
+                    return result
+                if setup.get("ci_only"):
+                    self._safe_log(f"Checks requiring CI: {setup['ci_only']}", repo=result.repo)
+                if not is_toolchain:
+                    git.create_branch(branch)
+                result.changes = []
+
                 session = new_session()
                 try:
                     session.start()
                     # --- assess breaking changes before touching the code ------
                     impact = None
-                    if breaking_updates:
+                    if breaking_updates and not is_toolchain:
                         assessment_head = git.commit_sha()
                         assessment = session.prompt(
                             load_prompt(
@@ -1152,15 +1323,21 @@ class Worker:
                                 + detail
                             )
                     # --- bump -------------------------------------------------
-                    bump_prompt = load_prompt(
-                        "bump",
-                        UPDATES=render_updates(updates),
-                        MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
-                    )
-                    bump = session.prompt(bump_prompt)
-                    work_notes = bump.text
-                    self.state.log(f"bump done: {bump.text[:400]}", repo=f"{owner}/{repo}")
-                    result.changes = git.changed_files()
+                    if is_toolchain:
+                        bump_text = (
+                            "Applied coordinated toolchain pins and refreshed the lockfiles."
+                        )
+                        result.changes = sorted(group.touch)
+                    else:
+                        bump_prompt = load_prompt(
+                            "bump",
+                            UPDATES=render_updates(updates),
+                            MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
+                        )
+                        bump_text = session.prompt(bump_prompt).text
+                        self.state.log(f"bump done: {bump_text[:400]}", repo=f"{owner}/{repo}")
+                        result.changes = git.changed_files()
+                    work_notes = bump_text
                     if not result.changes:
                         result.status = "skipped"
                         result.detail = "model made no changes"
@@ -1168,7 +1345,7 @@ class Worker:
                         return result
 
                     # --- keep the change in scope ---------------------------
-                    offenders = self._out_of_scope_changes(git, updates)
+                    offenders = [] if is_toolchain else self._out_of_scope_changes(git, updates)
                     if offenders:
                         self._safe_log(
                             "reverting edits that are not part of the update set: "
@@ -1184,7 +1361,7 @@ class Worker:
                             return result
 
                     # --- local verify ----------------------------------------
-                    ok, output = self.run_verify(git, result.repo, session)
+                    ok, output = self.run_verify(git, result.repo, session, updates)
                     if not ok:
                         self.state.log(
                             "local verification failed before migration",
@@ -1223,7 +1400,7 @@ class Worker:
                             session.close()
                             session = new_session()
                             session.start()
-                            ok, output = self.run_verify(git, result.repo, session)
+                            ok, output = self.run_verify(git, result.repo, session, updates)
                             self.state.log(
                                 "local verification after migration timeout",
                                 repo=result.repo,
@@ -1232,7 +1409,7 @@ class Worker:
                             continue
                         work_notes += "\n\nMigration:\n" + mig.text
                         self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
-                        ok, output = self.run_verify(git, result.repo, session)
+                        ok, output = self.run_verify(git, result.repo, session, updates)
                         break
                     if not ok:
                         # A recipe that no longer works must not be trusted again:
@@ -1252,6 +1429,19 @@ class Worker:
                         return result
 
                     result.changes = git.changed_files()
+                    if is_toolchain:
+                        self._validate_toolchains(git, updates)
+                        result.changes = sorted(
+                            set(result.changes)
+                            | (
+                                set(
+                                    git._run(
+                                        "diff", "--name-only", "-z", base_commit, "HEAD"
+                                    ).split("\0")
+                                )
+                                - {""}
+                            )
+                        )
                     if dry_run:
                         result.status = "skipped"
                         result.detail = (
@@ -1273,7 +1463,7 @@ class Worker:
                         return result
 
                     # --- reviewer-facing note ---------------------------------
-                    public_note = self._public_note(bump.text)
+                    public_note = self._public_note(bump_text)
                     try:
                         note_prompt = load_prompt(
                             "prnote",
@@ -1300,7 +1490,18 @@ class Worker:
 
                     # --- commit + push --------------------------------------
                     message = self.commit_message(tier, updates, public_note)
-                    git.commit(message)
+                    if is_toolchain:
+                        self._validate_toolchains(git, updates)
+                        conflict = self.overlapping_pr(
+                            owner, repo, group, files=set(result.changes)
+                        )
+                        if conflict:
+                            result.status = "skipped"
+                            result.detail = f"PR #{conflict['number']} already reserves these files"
+                            self.state.end_attempt(attempt_id, "skipped", result.detail)
+                            return result
+                    if not is_toolchain or git.changed_files():
+                        git.commit(message)
                     try:
                         git.push(branch)
                     except GitError as exc:
@@ -1333,7 +1534,14 @@ class Worker:
 
                     # --- open PR --------------------------------------------
                     ref_id = _make_ref_id()
-                    title = PR_TITLES[tier].format(n=len(updates))
+                    title = (
+                        "chore(toolchain): update " + ", ".join(sorted({u.name for u in updates}))
+                        if is_toolchain
+                        else PR_TITLES[tier].format(n=len(updates))
+                    )
+                    title = sanitize.scrub_text(title)
+                    if sanitize.contains_leak(title):
+                        raise PiError("pull request title contains internal detail")
                     body = self.pr_body(
                         updates, f"{owner}/{repo}", tier, public_note, ref_id, impact
                     )
@@ -1384,7 +1592,7 @@ class Worker:
                                 f"{u.name}: {u.current or '(unpinned)'} -> {u.latest}"
                                 for u in updates
                             ],
-                            bump.text[:800],
+                            bump_text[:800],
                             persona=self.persona,
                         )
                     )
@@ -1449,7 +1657,11 @@ class Worker:
 
                     # --- auto-merge (tier A only) ----------------------------
                     if not dry_run:
-                        ok, why = self.may_auto_merge(owner, repo, number, tier)
+                        ok, why = (
+                            (False, "toolchain proposals require human review")
+                            if is_toolchain
+                            else self.may_auto_merge(owner, repo, number, tier)
+                        )
                         if ok:
                             self.gh.pr_merge(owner, repo, number)
                             self.state.record_pr(
@@ -1648,9 +1860,47 @@ class Worker:
         self.state.log(f"fixci: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return "model made no changes"
-        git.commit(self.commit_message(TIER_A, updates, "Fixes a failing CI check."))
+        if branch.startswith("toolchains/"):
+            self._verify_toolchain_repair(
+                owner,
+                repo,
+                default_branch,
+                updates,
+                git,
+                session,
+                "chore(toolchain): fix CI verification",
+            )
+        else:
+            git.commit(self.commit_message(TIER_A, updates, "Fixes a failing CI check."))
         git.push(branch)
         return result.text[:500]
+
+    def _verify_toolchain_repair(
+        self,
+        owner: str,
+        repo: str,
+        base: str,
+        updates: list[Update],
+        git: Git,
+        session: PiSession,
+        message: str,
+    ) -> None:
+        if not any(u.toolchain_plan for u in updates):
+            raise PiError("coordinated toolchain plan is missing")
+        self._validate_toolchains(git, updates)
+        merging = bool(git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip())
+        if not merging and sanitize.scan_diff(git._run("diff", "HEAD")):
+            raise PiError("toolchain repair contains internal tooling references")
+        git.commit(message)
+        setup = self.ensure_build_setup(owner, repo, base, git, True)
+        if setup["status"] != "ok":
+            raise PiError(f"toolchain repair verification setup failed: {setup['status']}")
+        ok, output = self.run_verify(git, f"{owner}/{repo}", session, updates)
+        if not ok:
+            raise PiError("toolchain repair failed local verification: " + output[-1500:])
+        self._validate_toolchains(git, updates)
+        if git.changed_files():
+            raise PiError("verification modified the toolchain repair")
 
     # ------------------------------------------------------------ reviews
     def collect_review_comments(self, owner: str, repo: str, number: int) -> list[dict]:
@@ -1722,7 +1972,18 @@ class Worker:
         self.state.log(f"review: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return False, "model made no changes"
-        git.commit("chore(deps): address review feedback\n\nGenerated by sadoc.")
+        if branch.startswith("toolchains/"):
+            self._verify_toolchain_repair(
+                owner,
+                repo,
+                default_branch,
+                updates,
+                git,
+                session,
+                "chore(toolchain): address review feedback",
+            )
+        else:
+            git.commit("chore(deps): address review feedback\n\nGenerated by sadoc.")
         git.push(branch)
         return True, result.text[:500]
 
@@ -1732,6 +1993,8 @@ class Worker:
         if tier not in self.cfg.auto_merge_tiers:
             return False, f"tier {tier} is not auto-mergeable"
         view = self.gh.pr_view(owner, repo, number)
+        if (view.get("headRefName") or "").startswith("toolchains/"):
+            return False, "toolchain proposals require human review"
         if view.get("isDraft"):
             return False, "PR is a draft"
         if view.get("mergeable") != "MERGEABLE":
@@ -1854,13 +2117,31 @@ class Worker:
         targets = json.loads(details["updates"] or "[]") if details else []
         if not targets:
             return "conflicts need the original PR update targets; leaving it for a human"
+        toolchain_updates = []
+        if branch.startswith("toolchains/"):
+            toolchain_updates = [
+                Update(repo=repo, **item) for item in targets if item.get("toolchain_plan")
+            ]
+            if not toolchain_updates:
+                return "coordinated toolchain plan is missing; rescan required"
         base = view.get("baseRefName") or self.gh.default_branch(owner, name)
         if not dry_run:
             self.state.record_pr(repo, number, conflict_attempts=attempts + 1)
         with self.prepare_clone(owner, name, base) as git:
-            setup = self.ensure_build_setup(owner, name, base, git)
-            if setup["status"] != "ok":
-                return f"conflict repair blocked by build setup: {setup['status']}"
+            if toolchain_updates:
+                try:
+                    toolchains.validate(
+                        git.path,
+                        [u.toolchain_plan for u in toolchain_updates],
+                        self._toolchain_paths(git),
+                        proposed=False,
+                    )
+                except ValueError:
+                    return "toolchain base pins changed; rescan required before conflict repair"
+            else:
+                setup = self.ensure_build_setup(owner, name, base, git)
+                if setup["status"] != "ok":
+                    return f"conflict repair blocked by build setup: {setup['status']}"
             if not git.fetch_branch(base) or not git.fetch_branch(branch):
                 return "conflict repair could not fetch the base or PR branch"
             git.create_branch(branch, start_point=f"origin/{branch}")
@@ -1930,28 +2211,39 @@ class Worker:
                 )
                 if conflicts and sanitize.scan_diff(git._run("diff", "--cached", "--", *conflicts)):
                     raise PiError("conflict resolution contains internal tooling references")
-                verified_tree = git._run("write-tree").strip()
-                ok, output = self.run_verify(git, repo, session)
-                self.state.log("conflict repair verification", repo=repo, data={"output": output})
-                if not ok:
-                    raise PiError(
-                        "conflict resolution failed local verification: " + output[-1500:]
-                    )
-                if (
-                    git.commit_sha() != original_head
-                    or git._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip()
-                    != merge_head
-                    or git._run("write-tree").strip() != verified_tree
-                    or git.diff().strip()
-                    or git._run("ls-files", "--others", "--exclude-standard").strip()
-                ):
-                    raise PiError("verification modified the resolved tree")
-                if dry_run:
-                    return "conflicts resolved and verified (dry run); no push"
                 message = sanitize.scrub_text("chore: merge base branch updates")
                 if sanitize.contains_leak(message):
                     raise PiError("unsafe merge commit message")
-                git.commit(message)
+                if toolchain_updates:
+                    self._verify_toolchain_repair(
+                        owner, name, base, toolchain_updates, git, session, message
+                    )
+                else:
+                    verified_tree = git._run("write-tree").strip()
+                    ok, output = self.run_verify(git, repo, session)
+                    self.state.log(
+                        "conflict repair verification", repo=repo, data={"output": output}
+                    )
+                    if not ok:
+                        raise PiError(
+                            "conflict resolution failed local verification: " + output[-1500:]
+                        )
+                    if (
+                        git.commit_sha() != original_head
+                        or git._run(
+                            "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False
+                        ).strip()
+                        != merge_head
+                        or git._run("write-tree").strip() != verified_tree
+                        or git.diff().strip()
+                        or git._run("ls-files", "--others", "--exclude-standard").strip()
+                    ):
+                        raise PiError("verification modified the resolved tree")
+                    if dry_run:
+                        return "conflicts resolved and verified (dry run); no push"
+                    git.commit(message)
+                if dry_run:
+                    return "conflicts resolved and verified (dry run); no push"
                 git.push(branch)
                 pushed = True
                 self.state.record_pr(
@@ -2019,7 +2311,7 @@ class Worker:
             return self.repair_conflicts(repo_row, view, dry_run=dry_run)
 
         # A pull request that has gone green can merge itself.
-        if ci_state == "pass":
+        if ci_state == "pass" and not branch.startswith("toolchains/"):
             outcome = self.maybe_auto_merge(owner, name, number, tier)
             if outcome == "auto-merged":
                 return "auto-merged"
@@ -2044,7 +2336,18 @@ class Worker:
             if base_broken:
                 return f"ci=fail, the base branch is already failing ({base_detail})"
 
+        if dry_run and branch.startswith("toolchains/"):
+            return f"ci={ci_state} (dry run)"
         with self.prepare_clone(owner, name, default_branch) as git:
+            if branch.startswith("toolchains/"):
+                targets = self._updates_for_pr(repo, tier, number=number)
+                plans = [u.toolchain_plan for u in targets if u.toolchain_plan]
+                if not plans:
+                    return "coordinated toolchain plan is missing; rescan required"
+                try:
+                    toolchains.validate(git.path, plans, self._toolchain_paths(git), proposed=False)
+                except ValueError:
+                    return "toolchain base pins changed; rescan required"
             # The deps branch only exists on the remote - the clone is shallow and
             # fetched the default branch only.
             if not git.fetch_branch(branch):
@@ -2060,7 +2363,9 @@ class Worker:
                 max_tokens=model.max_tokens,
                 reasoning=model.reasoning,
             )
-            updates = self._updates_for_pr(repo, tier)
+            updates = self._updates_for_pr(repo, tier, number=number)
+            if branch.startswith("toolchains/") and not any(u.toolchain_plan for u in updates):
+                return "coordinated toolchain plan is missing; rescan required"
             session = PiSession(
                 cwd=git.path,
                 model=spec,
@@ -2186,8 +2491,15 @@ class Worker:
                         pass
                     break
 
-    def _updates_for_pr(self, repo: str, tier: str) -> list[Update]:
-        """Rebuild Update records for a PR from the persisted state."""
+    def _updates_for_pr(self, repo: str, tier: str, *, number: int | None = None) -> list[Update]:
+        """Prefer the exact targets attached to this PR over subsequent scans."""
+        if number is not None:
+            details = self.state.pr_details(repo, number)
+            if details and details["updates"]:
+                try:
+                    return [Update(repo=repo, **item) for item in json.loads(details["updates"])]
+                except (TypeError, ValueError):
+                    return []
         rows = self.state.conn.execute("SELECT * FROM deps WHERE repo=?", (repo,)).fetchall()
         out = []
         for r in rows:

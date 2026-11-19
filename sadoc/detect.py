@@ -14,10 +14,10 @@ import concurrent.futures
 import fnmatch
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 
-from . import environments, lockfiles, registry, semver
+from . import lockfiles, registry, semver, toolchains
 from . import manifests as mf
 
 # Files we treat as dependency manifests.
@@ -91,6 +91,7 @@ class Update:
         "manifest"  # "manifest" = edit the manifest, "lockfile" = refresh the lockfile only
     )
     installed: str | None = None
+    toolchain_plan: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -105,6 +106,7 @@ class Update:
             "constraint": self.constraint,
             "action": self.action,
             "installed": self.installed,
+            **({"toolchain_plan": self.toolchain_plan} if self.toolchain_plan else {}),
         }
 
 
@@ -182,47 +184,13 @@ def find_manifest_paths(
         path = entry.get("path", "")
         if entry.get("type") != "blob" or should_skip(path):
             continue
-        if is_manifest(path):
+        if is_manifest(path) or (toolchains.is_build_input(path) and not is_workflow(path)):
             manifests.append(path)
         elif is_workflow(path):
             workflows.append(path)
-        elif lockfiles.is_lockfile(path):
+        elif lockfiles.is_lockfile(path) or toolchains.is_lockfile(path):
             locks.append(path)
     return sorted(manifests), sorted(workflows), sorted(locks)
-
-
-def _fetch_and_parse(args) -> list[mf.Dep]:
-    gh, owner, repo, path, branch = args
-    try:
-        text = gh.file_text(owner, repo, path, ref=branch)
-    except Exception:
-        return []
-    if is_workflow(path):
-        # A workflow pins two different things: the actions it uses and the
-        # runtime those actions run on.
-        return mf.parse_workflow(text, path)
-    if PurePosixPath(path).name in ("Dockerfile", "Dockerfile.dev", "Dockerfile.prod"):
-        return mf.parse_dockerfile(text, path)
-    return mf.parse_manifest(path, text)
-
-
-def _fetch_environment(args) -> list[dict]:
-    """The runtime versions pinned in a workflow."""
-    gh, owner, repo, path, branch = args
-    try:
-        text = gh.file_text(owner, repo, path, ref=branch)
-    except Exception:
-        return []
-    return [u.as_dict() for u in environments.detect_updates(f"{owner}/{repo}", path, text)]
-
-
-def _fetch_workflow(args) -> list[mf.Dep]:
-    gh, owner, repo, path, branch = args
-    try:
-        text = gh.file_text(owner, repo, path, ref=branch)
-    except Exception:
-        return []
-    return mf.parse_workflow(text, path)
 
 
 def _fetch_lockfile(args) -> tuple[str, dict[str, str]]:
@@ -234,7 +202,9 @@ def _fetch_lockfile(args) -> tuple[str, dict[str, str]]:
     return path, lockfiles.parse_lockfile(path, text)
 
 
-def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> list[Update]:
+def detect_repo(
+    gh, owner: str, repo: str, branch: str, workers: int = 8, *, diagnostic=None
+) -> list[Update]:
     """Detect outdated dependencies in one repo."""
     manifest_paths, workflow_paths, lock_paths = find_manifest_paths(gh, owner, repo, branch)
     if not manifest_paths and not workflow_paths:
@@ -244,24 +214,33 @@ def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> lis
     installed: dict[str, str] = {}
     lockfiles_present: set[str] = set()
     deps: list[mf.Dep] = []
-    environment_updates: list[dict] = []
+    build_files: dict[str, str] = {}
+    unreadable: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        jobs = [(gh, owner, repo, p, branch) for p in manifest_paths]
-        jobs += [(gh, owner, repo, p, branch) for p in workflow_paths]
-        lock_jobs = [(gh, owner, repo, p, branch) for p in lock_paths]
-        futures = [pool.submit(_fetch_and_parse, j) for j in jobs]
-        env_futures = [pool.submit(_fetch_environment, j) for j in jobs if is_workflow(j[3])]
-        lock_futures = [pool.submit(_fetch_lockfile, j) for j in lock_jobs]
+        paths = manifest_paths + workflow_paths
+        build_paths = {p for p in paths if toolchains.is_build_input(p)}
+        futures = {pool.submit(gh.file_text, owner, repo, path, ref=branch): path for path in paths}
+        lock_jobs = [(gh, owner, repo, p, branch) for p in lock_paths if lockfiles.is_lockfile(p)]
+        lock_futures = [pool.submit(_fetch_lockfile, job) for job in lock_jobs]
         for fut in concurrent.futures.as_completed(futures):
+            path = futures[fut]
             try:
-                deps.extend(fut.result())
+                contents = fut.result()
             except Exception:
-                pass
-        for fut in concurrent.futures.as_completed(env_futures):
+                if path in build_paths:
+                    unreadable.append(path)
+                continue
+            if path in build_paths:
+                build_files[path] = contents
             try:
-                environment_updates.extend(fut.result())
-            except Exception:
-                pass
+                if is_workflow(path):
+                    deps.extend(mf.parse_workflow(contents, path))
+                elif PurePosixPath(path).name.startswith("Dockerfile"):
+                    deps.extend(mf.parse_dockerfile(contents, path))
+                else:
+                    deps.extend(mf.parse_manifest(path, contents))
+            except (AttributeError, TypeError, ValueError):
+                continue
         for fut in concurrent.futures.as_completed(lock_futures):
             try:
                 path, mapping = fut.result()
@@ -272,10 +251,50 @@ def detect_repo(gh, owner: str, repo: str, branch: str, workers: int = 8) -> lis
             except Exception:
                 pass
 
+    tracked = set(manifest_paths + workflow_paths + lock_paths)
+    if ".sadoc-toolchains.toml" in build_files:
+        try:
+            for path in sorted(toolchains.declared_paths(build_files) - tracked):
+                build_files[path] = gh.file_text(owner, repo, path, ref=branch)
+        except Exception as exc:
+            unreadable.append(f"custom toolchain input ({type(exc).__name__})")
+
     updates: list[Update] = []
+    toolchain_images = {
+        (pin.path, f"library/{pin.image}") for pin in toolchains.inventory(build_files) if pin.image
+    }
+    proposals, blockers = (
+        toolchains.plan(build_files, lock_paths=tuple(lock_paths)) if not unreadable else ([], [])
+    )
+    if diagnostic:
+        for detail in blockers + [f"unreadable build input: {path}" for path in sorted(unreadable)]:
+            diagnostic(detail)
+    for proposal in proposals:
+        first = proposal.changes[0].pin
+        updates.append(
+            Update(
+                repo=f"{owner}/{repo}",
+                manifest=first.path,
+                ecosystem="toolchain",
+                name=proposal.tool,
+                section="toolchain pins",
+                kind="toolchain",
+                current=first.version,
+                latest=proposal.target,
+                bump_kind=semver.classify(first.version, proposal.target) or "minor",
+                constraint=None,
+                action="toolchain",
+                toolchain_plan={
+                    **asdict(proposal),
+                    "lockfiles": toolchains.related_lockfiles(proposal, lock_paths),
+                },
+            )
+        )
     seen: set[tuple[str, str]] = set()
 
     for dep in deps:
+        if (dep.manifest, dep.name.removeprefix("docker.io/")) in toolchain_images:
+            continue
         eco = registry.ecosystem_for(dep)
         if eco == "unknown":
             continue
