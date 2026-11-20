@@ -241,16 +241,16 @@ force-pushed.
 
 ## 7. Privacy
 
-Public repositories should not advertise the tooling that maintains them. The
-pull request therefore contains:
+Every pull request gets a fixed “Opened by Sadoc.” signature at publication.
+Dependency update pull requests also contain:
 
 - a table of the updated packages;
 - an optional short note explaining what had to change in the project's own code;
 - for breaking updates, a sanitized changelog-based impact assessment;
 - a small `<sub>ref 8f2a1c3d</sub>` reference id.
 
-Everything else — which model, the transcript, the verification output, the
-tier — is written to the local SQLite database and looked up by that id.
+The local SQLite database stores the model, transcript, local verification
+output, and tier under that reference ID.
 
 Two layers keep it that way:
 

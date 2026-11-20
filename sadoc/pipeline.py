@@ -717,12 +717,7 @@ class Worker:
         ref_id: str,
         impact: str | None = None,
     ) -> str:
-        """A pull request body that reads like a normal dependency update.
-
-        Nothing about the tooling goes in here - the model, the transcript and
-        the verification output stay in the local database, and the PR only
-        carries a short reference id.
-        """
+        """Describe the update and link it to its local record by reference ID."""
         intro = (
             "Updates the repository's coordinated toolchain pins."
             if any(u.toolchain_plan for u in updates)
@@ -951,8 +946,7 @@ class Worker:
                     repo,
                     f"fix: {diagnosis.failed_job or 'the build'} is broken on {branch}",
                     f"The default branch is failing.\n\n{diagnosis.detail}\n\n"
-                    f"```\n{doctor.summarise(diagnosis, 4000)}\n```\n\n"
-                    f"Fixed by Sadoc.",
+                    f"```\n{doctor.summarise(diagnosis, 4000)}\n```",
                     fix_branch,
                     branch,
                 )

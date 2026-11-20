@@ -103,9 +103,8 @@ def disable_version_updates_in_repo(gh, owner: str, repo: str, branch: str) -> d
     branch_name = "chore/disable-dependabot-version-updates"
     message = (
         "chore: stop opening Dependabot version update pull requests\n\n"
-        "The dependency updates for this repository are maintained by Sadoc, which\n"
-        "groups them into a single pull request, fixes what the update breaks and\n"
-        "drives CI to green. Dependabot security updates are unaffected.\n"
+        "This change sets Dependabot's open pull request limit to zero for each\n"
+        "package ecosystem. Dependabot security updates are unaffected.\n"
     )
     content = base64.b64encode(updated.encode()).decode()
 
