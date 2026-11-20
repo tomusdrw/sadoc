@@ -148,6 +148,7 @@ comment_signoff = "\n\n— Sadoc"
 #
 # [repos."my-owner/my-repo"]
 # verify = "npm ci --no-audit && npm run typecheck && npm test"
+# hold_major = ["npm:typescript"]  # Defer an incompatible major upgrade.
 #
 # [repos."other-repo"]
 # verify = "cargo test --workspace"

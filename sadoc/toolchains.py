@@ -7,6 +7,7 @@ import json
 import re
 import shlex
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -800,7 +801,7 @@ _IMMUTABLE_INSTALLS = {
 }
 
 
-def verification_commands(root: Path, plans: list[dict]) -> str:
+def verification_commands(root: Path, plans: Sequence[dict]) -> str:
     """Check the running version in the same environment as the build recipe."""
     scripts = []
     installs = set()
