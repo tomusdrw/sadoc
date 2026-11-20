@@ -83,6 +83,7 @@ reasoning  = true
 # Per-task overrides. "bump" edits manifests, "migrate" fixes breaking
 # changes, "fixci" fixes a failing CI run, "review" answers review comments.
 # Optional "prepare" discovers project setup; when omitted it uses "bump".
+# Optional "diagnose" analyzes failure emails; when omitted it uses the base model.
 [models.bump]
 model    = "local-model"
 base_url = "http://127.0.0.1:8080/v1"

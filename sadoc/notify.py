@@ -247,7 +247,7 @@ class Notifier:
         self.to = to or []
         self.from_addr = from_addr
 
-    def send(self, alert, force: bool = False) -> str:
+    def send(self, alert, force: bool = False, *, prepare=None) -> str:
         """Send an alert. Returns 'sent', 'duplicate', 'dry-run' or 'failed'."""
         if (
             self.state is not None
@@ -270,6 +270,8 @@ class Notifier:
                     ok=False,
                 )
             return "dry-run"
+        if prepare is not None and not isinstance(self.backend, NullBackend):
+            alert = prepare(alert)
         html_body = getattr(alert, "html", None)
         inline_images = []
         if html_body and f"cid:{LOGO_CID}" in html_body:
