@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import textwrap
+from contextlib import closing
+
+import pytest
 
 from sadoc import alerts, notify
 from sadoc import config as config_mod
@@ -141,6 +144,44 @@ def test_notifier_deduplicates(tmp_path):
         assert n.send(alert) == "duplicate"
     finally:
         st.close()
+
+
+@pytest.mark.parametrize("model_fails", [False, True])
+def test_failure_email_analysis_is_best_effort(tmp_path, monkeypatch, model_fails):
+    from unittest.mock import Mock
+
+    from sadoc.pipeline import Worker
+    from sadoc.piworker import PiError, TurnResult
+
+    backend = Mock()
+    backend.send.return_value = "message-id"
+    session = Mock()
+    if model_fails:
+        session.prompt.side_effect = PiError("timed out")
+    else:
+        session.prompt.return_value = TurnResult(
+            text="**Diagnosis**\nUse Python 3.15.", settled=True
+        )
+    start_session = Mock(return_value=session)
+    monkeypatch.setattr("sadoc.pipeline.PiSession", start_session)
+
+    with closing(state_mod.State(tmp_path / "state.db")) as state:
+        notifier = notify.Notifier(backend, state=state, dry_run=True)
+        worker = Worker(config_mod.Config(), Mock(), state, notifier=notifier)
+        alert = alerts.failure("owner/repo", "local verification", "expected Python 3.15")
+        assert worker.notify(alerts.failure("owner/dry-run", "pipeline", "failure")) == "dry-run"
+        start_session.assert_not_called()
+
+        notifier.dry_run = False
+        assert worker.notify(alert) == "sent"
+        message = backend.send.call_args.args[0]
+        assert "expected Python 3.15" in message.text
+        assert ("Use Python 3.15." in message.text) is (not model_fails)
+        assert ("Use Python 3.15." in message.html) is (not model_fails)
+        assert session.prompt.call_args.kwargs["report_only"] is True
+        session.close.assert_called_once()
+        assert worker.notify(alert) == "duplicate"
+        start_session.assert_called_once()
 
 
 def test_alert_body_has_no_internal_detail():
