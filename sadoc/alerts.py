@@ -62,6 +62,7 @@ class Alert:
         heading: str = "",
         footer: str = "",
         persona: Persona | None = None,
+        failure_context: tuple[str, str] | None = None,
     ):
         self.kind = kind
         self.subject = subject
@@ -72,6 +73,7 @@ class Alert:
         self.heading = heading
         self.persona = persona or Persona()
         self.footer = footer or self.persona.signature()
+        self.failure_context = failure_context
 
     # ---------------------------------------------------------------- text
     @property
@@ -406,7 +408,7 @@ def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) 
         ("Stage", stage),
     )
     if detail:
-        blocks.append(Block(kind="code", value=detail[:2000]))
+        blocks.append(Block(kind="code", value=detail[-2000:]))
     blocks.append(
         Block(
             kind="note",
@@ -422,6 +424,7 @@ def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) 
         dedupe_key=f"{FAILURE}:{repo}:{stage}:{int(time.time() // 86400)}",
         heading="Something went wrong",
         persona=p,
+        failure_context=(stage, detail[-12000:]) if detail.strip() else None,
     )
 
 
