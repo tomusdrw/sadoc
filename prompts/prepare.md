@@ -134,6 +134,13 @@ recipe-owned disposable virtual environment, use `uv venv --clear` or reuse a
 compatible environment and synchronize its dependencies. Do not depend on files
 you manually created during exploration. Clean up any local services you start (use a trap).
 
+Use the versions pinned by the checkout for both installation and tests. If a
+runtime is missing, prefer an available package manager or an official versioned
+release archive in the tool cache. Do not use pipe-to-shell installers.
+For Python, when using uv, use `uv python install <pinned-version>` and create
+the test environment with `uv venv --clear --python <pinned-version>`. Export
+that environment's bin directory on PATH so the version check and tests use it.
+
 **Install into the persistent cache, not into a temporary directory.** The
 environment variable `SADOC_TOOL_CACHE` names a directory that survives between
 runs and is wiped only by the person who owns the machine. Anything you put in
@@ -240,13 +247,12 @@ contents could look like report fields. For example:
 SETUP:
 ```bash
 export PATH="$SADOC_TOOL_CACHE/node/bin:$PATH"
-corepack prepare yarn@4.9.2 --activate
-yarn install --immutable
+corepack yarn install --immutable
 ```
 VERIFY:
 ```bash
-yarn build
-yarn test
+corepack yarn build
+corepack yarn test
 ```
 
 The commands above only demonstrate formatting; use this project's actual pinned

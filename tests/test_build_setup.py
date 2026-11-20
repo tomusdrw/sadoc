@@ -10,10 +10,12 @@ from unittest.mock import Mock
 import pytest
 
 from sadoc.config import Config
+from sadoc.detect import Update
 from sadoc.gitops import Git
 from sadoc.pipeline import Worker
 from sadoc.piworker import PiError, TurnResult
 from sadoc.state import State
+from sadoc.toolchains import Pin
 
 REPORT = """```
 STATUS: ready
@@ -106,6 +108,73 @@ def test_discovery_rejects_setup_that_fails_when_repeated(project):
     assert "Repeat replay failed" in result["verify_output"]
     assert ".venv" in result["verify_output"]
     assert not (git.path / ".venv").exists()
+
+
+@pytest.mark.parametrize(("version", "status"), [("3.14", "validation_failed"), ("3.15", "ok")])
+def test_toolchain_discovery_validates_runtime_after_setup(project, version, status):
+    worker, git, session = project
+    session.report = REPORT.replace(
+        "export BUILD_MARKER", f'python() {{ echo "Python {version}"; }}; export BUILD_MARKER'
+    )
+    plan = {
+        "scope": ".",
+        "tool": "python",
+        "target": "3.15.2",
+        "pins": [vars(Pin("python", ".python-version", "3.14", 0, 4, "install", "."))],
+        "lockfiles": [],
+    }
+
+    result = worker.ensure_build_setup("alice", "repo", "main", git, [plan])
+
+    assert result["status"] == status
+    assert "python" in session.prompts[0] and "3.15" in session.prompts[0]
+    if status == "validation_failed":
+        assert "verification must use 3.15" in session.prompts[-1]
+
+
+def test_repository_major_hold_keeps_other_updates(project, monkeypatch):
+    worker, _, _ = project
+    worker.cfg.repos["alice/repo"] = {"hold_major": ["npm:typescript"]}
+    major = Update(
+        "alice/repo",
+        "package.json",
+        "npm",
+        "typescript",
+        "",
+        "",
+        "6.0.0",
+        "7.0.0",
+        "major",
+        "^6.0.0",
+    )
+    patch = Update(
+        "alice/repo",
+        "package.json",
+        "npm",
+        "typescript",
+        "",
+        "",
+        "6.0.0",
+        "6.0.1",
+        "patch",
+        "^6.0.0",
+    )
+    other = Update(
+        "alice/repo",
+        "package.json",
+        "npm",
+        "storybook",
+        "",
+        "",
+        "9.0.0",
+        "10.0.0",
+        "major",
+        "^9.0.0",
+    )
+    monkeypatch.setattr("sadoc.detect.detect_repo", lambda *args, **kwargs: [major, patch, other])
+
+    assert worker.detect_repo("alice", "repo", "main") == [patch, other]
+    assert worker.detect_repo("bob", "repo", "main") == [major, patch, other]
 
 
 @pytest.mark.parametrize("field", ["SETUP", "VERIFY"])
