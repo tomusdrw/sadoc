@@ -1,7 +1,6 @@
 """The privacy scrubber.
 
-Pull requests must not mention the tooling that produced them. These tests are
-the guard rail for that promise.
+The scrubber keeps tool and model details out of pull request prose.
 """
 
 from __future__ import annotations

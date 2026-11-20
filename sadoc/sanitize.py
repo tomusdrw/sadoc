@@ -1,8 +1,8 @@
 """Keep internal details out of pull requests.
 
-Most of these repositories are public, so a PR must not advertise the tooling
-behind it. The full record (model, agent transcript, verification output) stays
-in the local SQLite database; the PR carries only a short reference id.
+The full record (model, agent transcript, verification output) stays in the
+local SQLite database. The orchestrator adds Sadoc's public signature after
+checking the pull request text.
 
 Two jobs:
 
@@ -45,7 +45,7 @@ LEAK_MARKERS: list[tuple[str, str, str]] = [
     (r"\bthe (?:local |open[- ]source )?llm\b", "the model", "the change"),
     (r"\b(?:an?|the) (?:large )?language model\b", "the model", "the change"),
     (r"\bdeps[-_ ]?bot\b", "deps-bot", ""),
-    # The tool's own name must never reach a pull request.
+    # Only the orchestrator's fixed PR signature may name Sadoc.
     (r"\bsadoc\b", "sadoc", ""),
     (r"\bclaude\b", "claude", ""),
     (r"\bgpt[- ]?\d", "gpt", ""),
@@ -73,16 +73,19 @@ _COMPILED = [
 _COMMENT_PREFIXES = ("//", "#", "*", "/*", "--", "<!--")
 
 
-def scrub_text(text: str, filler: str = "") -> str:
+def scrub_text(text: str, filler: str = "", *, preserve_formatting: bool = False) -> str:
     """Remove tool/model mentions from prose.
 
     `filler` replaces the match; when it is empty the whole phrase is dropped.
+    Use `preserve_formatting` for Markdown with nested lists or code blocks.
     """
     if not text:
         return text
     out = text
     for pattern, _marker, replacement in _COMPILED:
         out = pattern.sub(replacement, out)
+    if preserve_formatting:
+        return out.rstrip()
     # Tidy up the damage, but never touch technical punctuation: "vi.fn()" must
     # survive scrubbing intact.
     out = re.sub(r"[ \t]{2,}", " ", out)

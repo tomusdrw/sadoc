@@ -244,10 +244,10 @@ The model never holds a credential that can change anything on GitHub.
 
 ## Privacy
 
-Pull requests are written to look like ordinary dependency updates. They contain no
-mention of the model, the agent, or this tool. The full internal record - model
-name, transcript, verification output - stays in the local SQLite database, and the
-pull request carries only a short opaque reference id:
+Every pull request Sadoc opens ends with a linked “Opened by Sadoc.” signature.
+The internal record (model name, transcript, and local verification output)
+stays in the local SQLite database. Dependency update pull requests include a
+short opaque reference ID:
 
 ```html
 <sub>
@@ -261,8 +261,6 @@ Look a reference id up locally with:
 sqlite3 ~/.sadoc/state.db \
   "select repo, number, tier, model, branch from pr_details where ref_id='8f2a1c3d'"
 ```
-
-The emails are a different matter: they are signed, and they say who is writing.
 
 ---
 

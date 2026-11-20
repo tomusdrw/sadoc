@@ -12,6 +12,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+from . import sanitize
+
+_PR_SIGNATURE = "Opened by [Sadoc](https://github.com/tomusdrw/sadoc)."
+
 
 class GhError(RuntimeError):
     pass
@@ -207,6 +211,11 @@ class Gh:
         draft: bool = False,
         labels: list[str] | None = None,
     ) -> dict:
+        title = sanitize.scrub_text(title)
+        body = sanitize.scrub_text(body, preserve_formatting=True)
+        if sanitize.contains_leak(title) or sanitize.contains_leak(body):
+            raise GhError("pull request text contains internal detail")
+        body = f"{body}\n\n{_PR_SIGNATURE}" if body else _PR_SIGNATURE
         args = [
             "pr",
             "create",
