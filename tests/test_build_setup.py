@@ -96,6 +96,66 @@ def test_setup_is_saved_and_replayed_in_the_verification_shell(project):
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
 
 
+@pytest.mark.parametrize("outcome", ["ready", "blocked", "replay_failed", "no_podman", "baseline"])
+def test_playwright_visual_discovery_recovery(project, outcome):
+    worker, git, session = project
+    worker.cfg.allow_containers = outcome != "no_podman"
+    blocked = (
+        f"STATUS: {'baseline_failed' if outcome == 'baseline' else 'blocked'}\n"
+        "VERIFY: NONE\n"
+        "NOTES: Playwright visual screenshot baselines differ on the host"
+    )
+
+    def prompt(self, text, **kwargs):
+        self.prompts.append(text)
+        artifact = git.path / "artifact"
+        if len(self.prompts) == 1:
+            artifact.write_text("from first discovery")
+            return TurnResult(text=blocked, settled=True)
+        assert not artifact.exists()
+        assert "Playwright visual screenshot baselines differ" in text
+        assert "SADOC_PLAYWRIGHT_RUNNER" in text and "--image-only" in text
+        artifact.write_text("from recovery")
+        reply = REPORT
+        if outcome == "blocked":
+            reply = blocked.replace(
+                "NOTES: Playwright visual screenshot baselines differ on the host",
+                "NOTES: podman run visual-check exited 125: image unavailable",
+            )
+        elif outcome == "replay_failed":
+            reply = REPORT.replace(
+                'test "$BUILD_MARKER" = ready && test -f artifact',
+                "printf image-error; false",
+            )
+        return TurnResult(text=reply, settled=True)
+
+    session.prompt = prompt
+    result = worker.ensure_build_setup("alice", "repo", "main", git)
+    assert not (git.path / "artifact").exists()
+    if outcome in ("no_podman", "baseline"):
+        assert result["status"] == ("baseline_failed" if outcome == "baseline" else "blocked")
+        assert len(session.prompts) == 1
+        assert session.commands == []
+        return
+
+    assert len(session.prompts) == 2
+    if outcome == "ready":
+        assert result["status"] == "ok"
+        assert worker.verify_command("alice/repo")
+        assert len(session.commands) == 3  # syntax, clean replay and repeat replay
+    else:
+        assert result["status"] == "blocked"
+        assert worker.verify_command("alice/repo") is None
+        assert "baselines differ" in result["verify_output"]
+        if outcome == "blocked":
+            assert "podman run visual-check exited 125" in result["notes"]
+            assert session.commands == []
+        else:
+            assert "printf image-error; false" in result["verify_output"]
+            assert "image-error" in result["notes"]
+            assert len(session.commands) == 2
+
+
 def test_discovery_rejects_setup_that_fails_when_repeated(project):
     worker, git, session = project
     session.report = REPORT.replace("printf generated > artifact", "mkdir .venv").replace(

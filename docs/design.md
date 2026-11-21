@@ -396,8 +396,12 @@ still present. This exercises verification retries after migration.
 A failed syntax check or replay gets at most two repairs in the discovery session,
 with the exact failed commands and diagnostic output. Reset to the original tree
 before requesting repair and again before validating its complete replacement
-report. The repair must not change source or weaken checks. Explicit blocked or
-baseline-failed reports stop immediately. `verify_output` retains all attempts,
+report. The repair must not change source or weaken checks. A first discovery
+that reports a Playwright screenshot mismatch as blocked gets one recovery
+attempt when Podman is enabled. The recovery uses the matching Ubuntu image and
+the project's runtime setup, then goes through clean and repeat replay before
+Sadoc can cache it. Other explicitly blocked or baseline-failed reports stop
+immediately. `verify_output` retains all attempts,
 including the first failure if repair produces an invalid report or an agent error.
 Only successful replay and cleanup make the replacement eligible for caching.
 
