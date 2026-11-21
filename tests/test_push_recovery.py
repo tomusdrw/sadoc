@@ -239,3 +239,37 @@ def test_partial_toolchain_update_never_pushes(project):
     assert "incomplete yarn" in result.detail
     project.git.push.assert_not_called()
     project.gh.open_pr.assert_not_called()
+
+
+def test_toolchain_ci_repair_reports_discovery_failure(project, monkeypatch):
+    group = _toolchain_group(project)
+    worker = project.worker
+    worker.watch_ci.return_value = "fail"
+    project.gh.pr_checks.return_value = []
+    worker.base_branch_is_also_failing = Mock(return_value=(False, ""))
+    worker.failed_ci_logs = Mock(return_value="CI failed")
+    worker.notify = Mock()
+    note = "pi prompt timed out; idle for 600.0s"
+    worker.ensure_build_setup = Mock(
+        side_effect=[
+            {"status": "ok"},
+            {"status": "agent_failed", "notes": note},
+        ]
+    )
+
+    def prompt(self, text, **kwargs):
+        if text.startswith("The repository already has"):
+            (project.git.path / "yarn.lock").write_text("__metadata:\n  version: 10\n")
+        elif "CI failed" in text:
+            (project.git.path / "ci-fix.txt").write_text("Repair CI.\n")
+        return TurnResult(text="Done.", settled=True)
+
+    monkeypatch.setattr(project.session, "prompt", prompt)
+    result = worker.process_repo("o", "r", group.tier, group.updates, group=group)
+
+    assert result.status == "failed"
+    assert "agent_failed" in result.detail
+    assert note in result.detail
+    alert = worker.notify.call_args.args[0]
+    assert note in alert.failure_context[1]
+    project.git.push.assert_called_once()
