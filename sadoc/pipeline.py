@@ -1992,7 +1992,11 @@ class Worker:
             owner, repo, base, git, [u.toolchain_plan for u in updates if u.toolchain_plan]
         )
         if setup["status"] != "ok":
-            raise PiError(f"toolchain repair verification setup failed: {setup['status']}")
+            detail = f"toolchain repair verification setup failed: {setup['status']}"
+            notes = (setup.get("notes") or "").strip()
+            if notes:
+                detail += "\n" + notes[-800:]
+            raise PiError(detail)
         ok, output = self.run_verify(git, f"{owner}/{repo}", session, updates)
         if not ok:
             raise PiError("toolchain repair failed local verification: " + output[-1500:])
