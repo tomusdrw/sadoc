@@ -1482,16 +1482,16 @@ class Worker:
                         try:
                             mig = session.prompt(
                                 migrate_prompt,
-                                timeout=1800 if recovering else 7200,
+                                timeout=7200,
                                 idle_timeout=600,
                             )
                         except PiPromptTimeout:
-                            if recovering:
-                                raise
                             self._log_session_failure(
                                 result.repo,
                                 session,
-                                "migration timed out; rechecking existing edits",
+                                "migration recovery timed out; rechecking existing edits"
+                                if recovering
+                                else "migration timed out; rechecking existing edits",
                             )
                             session.close()
                             session = new_session()
@@ -1502,6 +1502,8 @@ class Worker:
                                 repo=result.repo,
                                 data={"ok": ok, "output": output[-19000:]},
                             )
+                            if recovering and not ok:
+                                raise
                             continue
                         work_notes += "\n\nMigration:\n" + mig.text
                         self.state.log(f"migrate done: {mig.text[:400]}", repo=f"{owner}/{repo}")
