@@ -504,7 +504,7 @@ def test_active_migration_can_outlive_idle_budget(tmp_path, monkeypatch, event):
 )
 def test_unproductive_events_do_not_extend_idle_budget(tmp_path, monkeypatch, event):
     session = timed_session(tmp_path, monkeypatch, [(i, event) for i in range(1, 100)])
-    with pytest.raises(PiError, match="idle"):
+    with pytest.raises(PiPromptTimeout, match="inactivity limit"):
         session.prompt("migrate", timeout=100, idle_timeout=10)
     assert session.diagnostics()
     assert json.loads(session.diagnostics())["prompt"]["duration_s"] == 10
@@ -515,9 +515,15 @@ def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):
         "type": "message_update",
         "assistantMessageEvent": {"type": "text_delta", "delta": "still working"},
     }
-    session = timed_session(tmp_path, monkeypatch, [(i, delta) for i in range(1, 100)])
-    with pytest.raises(PiPromptTimeout, match="timed out after 25"):
+    session = timed_session(
+        tmp_path,
+        monkeypatch,
+        [(i, delta) for i in range(1, 24)] + [(24, {"type": "message_start"})],
+    )
+    with pytest.raises(PiPromptTimeout, match="timed out after 25.*wall-clock limit") as exc:
         session.prompt("migrate", timeout=25, idle_timeout=10)
+    assert "last event: message_start" in str(exc.value)
+    assert "2.0s since last progress" in str(exc.value)
     import json
 
     diagnostic = json.loads(session.diagnostics())["prompt"]

@@ -394,6 +394,7 @@ class PiSession:
         started = time.monotonic()
         last_progress = started
         self._prompt_diagnostic = {}
+        self._last_event = ""
         if report_only:
             message = "[SADOC_REPORT_ONLY]\n" + message
         elif read_only:
@@ -537,9 +538,15 @@ class PiSession:
                 if active
                 else f"; last event: {self._last_event or 'none'}"
             )
-            if idle_timeout is not None and idle_s >= idle_timeout:
-                detail += f"; idle for {idle_s:.1f}s"
-            raise PiPromptTimeout(f"pi prompt timed out after {result.duration_s:.1f}s{detail}")
+            limit = (
+                "inactivity limit"
+                if idle_timeout is not None and last_progress + idle_timeout < deadline
+                else "wall-clock limit"
+            )
+            raise PiPromptTimeout(
+                f"pi prompt timed out after {result.duration_s:.1f}s ({limit}); "
+                f"{idle_s:.1f}s since last progress{detail}"
+            )
         if not result.text.strip():
             raise PiError("pi returned an empty response")
         if result.stop_reason != "stop":

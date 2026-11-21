@@ -242,13 +242,15 @@ def test_failed_migration_keeps_local_diagnostics_and_verification(
     monkeypatch.setattr(
         project.session,
         "diagnostics",
-        lambda self: '{"tools": [{"output": "last migration output"}]}',
+        lambda self: (
+            '{"tools": [{"output": "last migration output"}]}' if self in sessions else "{}"
+        ),
         raising=False,
     )
     result = project.run("B", [update()])
     assert result.status == "failed"
     assert len(set(sessions)) == len(sessions) == attempts
-    assert project.worker.run_verify.call_count == attempts
+    assert project.worker.run_verify.call_count == attempts + (error is PiPromptTimeout)
     records = project.state.conn.execute(
         "select data from events where repo='o/r' and data is not null"
     ).fetchall()
@@ -258,8 +260,8 @@ def test_failed_migration_keeps_local_diagnostics_and_verification(
     project.gh.open_pr.assert_not_called()
 
 
-@pytest.mark.parametrize("remaining_failure", [False, True])
-def test_migration_timeout_recovers_existing_edits(project, monkeypatch, remaining_failure):
+@pytest.mark.parametrize("recovery", ["unneeded", "settled", "timed_out"])
+def test_migration_timeout_recovers_existing_edits(project, monkeypatch, recovery):
     first_session = None
     closed = []
     original = project.session.prompt
@@ -275,12 +277,17 @@ def test_migration_timeout_recovers_existing_edits(project, monkeypatch, remaini
             assert first_session in closed
             assert "documentation check failed" in text
             assert "original type error" not in text
+            assert kwargs["timeout"] == 7200
+            assert kwargs["idle_timeout"] == 600
+            if recovery == "timed_out":
+                (project.git.path / "docs.txt").write_text("Updated widget documentation\n")
+                raise PiPromptTimeout("recovery timed out")
         return original(self, text, **kwargs)
 
     monkeypatch.setattr(project.session, "prompt", prompt)
     monkeypatch.setattr(project.session, "close", lambda self: closed.append(self))
     verification = [(False, "original type error")]
-    if remaining_failure:
+    if recovery != "unneeded":
         verification.append((False, "documentation check failed"))
     project.worker.run_verify.side_effect = [*verification, (True, "passed")]
 
@@ -288,8 +295,10 @@ def test_migration_timeout_recovers_existing_edits(project, monkeypatch, remaini
     assert result.status == "pr_opened", result.detail
     assert "compat.py" in result.changes
     assert project.git._run("show", "HEAD:compat.py").strip() == "from widget import connect"
-    assert project.session.events.count("migrate") == int(remaining_failure)
-    assert len(closed) == 2
+    assert project.session.events.count("migrate") == (recovery == "settled")
+    assert len(closed) == (3 if recovery == "timed_out" else 2)
+    if recovery == "timed_out":
+        assert project.git._run("show", "HEAD:docs.txt").strip() == "Updated widget documentation"
 
 
 def test_leak_check_includes_new_migration_files(project):
