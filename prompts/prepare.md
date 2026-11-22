@@ -88,12 +88,31 @@ binaries, or try host-library overrides. If the matching image cannot run,
 report its exact error as blocked.
 Do not disable browser sandboxing or change the container security policy.
 
+## PostgreSQL-backed tests
+
 When tests need PostgreSQL, start a fresh container with the version from CI and
-the project's test credentials. Keep it alive for the full command with a cleanup
-trap. Put it and the browser/test container on a private network. Use
-`podman network create --disable-dns "$network"` and the database container's IP
-from `podman inspect` if rootless container DNS is unavailable. The URL uses the
-internal database port (usually 5432), not a published host port:
+the project's test credentials. Register a cleanup trap before creating the
+container and private network. Containers that connect to PostgreSQL must join
+that network. If rootless container DNS is unavailable, create the network with
+`podman network create --disable-dns "$network"` and use the database container's
+IP from `podman inspect`. That rootless bridge IP is reachable from peers on the
+network, but may be unreachable from the sandbox shell. Run a client that uses
+the bridge IP inside a container attached to the private network, including for
+non-browser tests. Use the internal database port (usually 5432) for that URL.
+For tests that run directly in a network-enabled sandbox shell, publish the
+database port on loopback only with `-p 127.0.0.1::5432`. Use `podman port` to
+discover the assigned host port and connect to that port on `127.0.0.1`.
+
+Bound database startup and readiness checks. Poll `pg_isready -h 127.0.0.1`
+through `podman exec` with a fixed number of attempts and a short timeout for
+each command. This checks server startup. Then run an authenticated `SELECT 1`
+from the test process's network using its test URL. Set a short connection
+timeout on each probe (for example, `PGCONNECT_TIMEOUT=3` with `psql`) and an
+outer command timeout so a single stalled probe cannot exhaust the discovery
+budget. If startup fails, capture the database container's logs and stop before
+running the tests.
+
+For a Playwright suite, the helper can perform the authenticated query:
 
 ```bash
 # network and database name the disposable resources created by SETUP.
@@ -105,12 +124,10 @@ node "$SADOC_PLAYWRIGHT_RUNNER" --network "$network" \
   --postgres-env TEST_DATABASE_URL -- npm test
 ```
 
-The helper performs an authenticated `SELECT 1` using the project's `pg` package,
-from the same container and URL as the tests. A readiness probe inside the server
-container alone does not establish connectivity from the test process. Each test
-shard needs isolated database state. Put service startup and cleanup in the saved
-recipe; use `set -e -o pipefail` so piping test output to tail/tee cannot hide errors.
-The cleanup trap must remove the session's database container and private network.
+The helper uses the project's `pg` package from the same container and URL as
+the tests. Each shard needs isolated database state. Put service startup,
+readiness checks, and cleanup in the saved recipe. Use `set -e -o pipefail` so
+piping test output to tail/tee cannot hide errors.
 
 ## Prove the recipe
 
