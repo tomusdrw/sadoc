@@ -154,6 +154,9 @@ you manually created during exploration. Clean up any local services you start (
 Use the versions pinned by the checkout for both installation and tests. If a
 runtime is missing, prefer an available package manager or an official versioned
 release archive in the tool cache. Do not use pipe-to-shell installers.
+For npm, print `node --version` immediately before `npm ci --engine-strict` in
+the package directory, including when the install runs inside a container.
+Keep engine checks enabled during discovery and replay.
 For Python, when using uv, use `uv python install <pinned-version>` and create
 the test environment with `uv venv --clear --python <pinned-version>`. Export
 that environment's bin directory on PATH so the version check and tests use it.

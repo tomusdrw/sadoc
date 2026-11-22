@@ -331,3 +331,52 @@ def test_diagnostic_failure_does_not_replace_original_error(project, monkeypatch
     result = project.run("B", [update()])
     assert result.status == "failed"
     assert result.detail == "PiError: original prompt failure"
+
+
+NPM_NODE_FAILURE = """exit 1
+npm error code EBADENGINE
+npm error engine Not compatible with your version of node/npm: jsdom@31.0.1
+npm error notsup Required: {"node":"^22.22.2 || ^24.15.0 || >=26.0.0"}
+npm error notsup Actual:   {"npm":"10.9.2","node":"v22.14.0"}
+"""
+
+
+@pytest.mark.parametrize("recovered", [True, False])
+def test_node_engine_failure_attempts_recipe_recovery_before_migration(project, recovered):
+    worker = project.worker
+    project.state.record_setup("o/r", "npm test", setup_command="npm ci")
+    worker.run_verify.return_value = (False, NPM_NODE_FAILURE)
+    if recovered:
+        worker.run_verify.side_effect = [(False, NPM_NODE_FAILURE), (True, "passed")]
+    recovery = Mock(return_value=recovered)
+    worker._recover_node_recipe = recovery
+
+    result = project.run("B", [update()])
+
+    recovery.assert_called_once()
+    assert "migrate" not in project.session.events
+    if recovered:
+        assert result.status == "pr_opened"
+        assert worker.run_verify.call_count == 2
+    else:
+        assert result.status == "failed"
+        assert "jsdom@31.0.1" in result.detail
+        assert "22.22.2" in result.detail
+        assert "22.14.0" in result.detail
+        assert project.state.setup("o/r")["status"] == "stale"
+
+
+def test_npm_engine_error_with_two_requirements_does_not_select_node(project):
+    failure = NPM_NODE_FAILURE.replace(
+        '"node":"^22.22.2 || ^24.15.0 || >=26.0.0"', '"node":">=20","npm":">=100"'
+    )
+    project.state.record_setup("o/r", "npm test", setup_command="npm ci")
+    project.worker.run_verify.return_value = (False, failure)
+
+    result = project.run("B", [update()])
+
+    assert result.status == "failed"
+    assert "npm >=100 (actual 10.9.2)" in result.detail
+    assert "Node >=20 (actual 22.14.0)" in result.detail
+    assert project.worker.run_verify.call_count == 1
+    assert "migrate" not in project.session.events
