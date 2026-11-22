@@ -1,5 +1,6 @@
 """Build discovery against real Git checkouts and SQLite; only pi is replaced."""
 
+import os
 import shlex
 import sqlite3
 import subprocess
@@ -12,7 +13,7 @@ import pytest
 from sadoc.config import Config
 from sadoc.detect import Update
 from sadoc.gitops import Git
-from sadoc.pipeline import Worker
+from sadoc.pipeline import Worker, _recipe_command
 from sadoc.piworker import PiError, TurnResult
 from sadoc.state import State
 from sadoc.toolchains import Pin
@@ -1221,3 +1222,103 @@ def test_recipe_can_repair_toolchain_then_database_url(project):
     assert "invalid database URL" in session.prompts[2]
     assert "Attempt 3" in result["verify_output"]
     assert worker.run_verify(git, "alice/repo", session(cwd=git.path))[0]
+
+
+def test_locked_npm_install_enforces_engines_before_tests(tmp_path):
+    setup = 'npm() { echo "engine-strict=$npm_config_engine_strict"; return 1; }\nnpm ci'
+    result = subprocess.run(
+        _recipe_command(setup, "echo tests-ran"),
+        shell=True,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert result.returncode == 1
+    assert result.stdout == "engine-strict=true\n"
+
+
+def test_cached_npm_recipe_recovers_with_newer_node_without_reapplying_update(project, monkeypatch):
+    worker, git, session = project
+    baseline = '{"dependencies":{"widget":"1.0.0"}}'
+    updated = '{"dependencies":{"widget":"2.0.0"}}'
+    manifest = git.path / "package.json"
+    manifest.write_text(baseline)
+    (git.path / "Dockerfile").write_text("FROM node:22.22-alpine\n")
+    git.stage_all()
+    git._run(
+        "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Node pins"
+    )
+
+    session.report = """STATUS: ready
+SETUP:
+```bash
+npm() {
+    if grep -q '2.0.0' package.json && [[ "$npm_config_engine_strict" == true ]]; then
+        echo 'npm error code EBADENGINE' >&2
+        echo 'npm error engine Not compatible with your version of node/npm: widget@2.0.0' >&2
+        echo 'npm error notsup Required: {"node":">=22.22.2"}' >&2
+        echo 'npm error notsup Actual: {"node":"v22.14.0"}' >&2
+        return 1
+    fi
+}
+npm ci
+```
+VERIFY: test -s package.json
+INPUTS: []
+"""
+    worker.ensure_build_setup("alice", "repo", "main", git)
+    assert worker.state.setup("alice/repo")["status"] == "ok"
+    latest = Mock(return_value="22.22.3")
+    monkeypatch.setattr("sadoc.toolchains.toolchain_releases.latest", latest)
+    events = []
+
+    def prompt(self, text, **kwargs):
+        if "## Breaking updates to assess" in text:
+            return TurnResult(text="Assess widget APIs after update.", settled=True)
+        if "## Updates to apply" in text:
+            events.append("bump")
+            manifest.write_text(updated)
+            return TurnResult(text="Updated widget.", settled=True)
+        assert "Use exactly Node 22.22.3" in text
+        assert "widget@2.0.0" in text
+        assert self.cwd != git.path
+        assert (self.cwd / "package.json").read_text() == baseline
+        assert manifest.read_text() == updated
+        events.append("recover")
+        return TurnResult(
+            text="""STATUS: ready
+SETUP:
+```bash
+node() { echo v22.22.3; }
+npm() { test "$npm_config_engine_strict" = true; }
+npm ci
+```
+VERIFY: true
+INPUTS: []
+""",
+            settled=True,
+        )
+
+    session.prompt = prompt
+    update = Update(
+        repo="alice/repo",
+        manifest="package.json",
+        ecosystem="npm",
+        name="widget",
+        section="dependencies",
+        kind="runtime",
+        current="1.0.0",
+        latest="2.0.0",
+        bump_kind="major",
+        constraint="1.0.0",
+    )
+    outcome = worker.process_repo("alice", "repo", "A", [update], dry_run=True)
+    assert outcome.status == "skipped", outcome.detail
+    assert "would open PR" in outcome.detail
+    assert events == ["bump", "recover"]
+    latest.assert_called_once_with("node", "22.22")
+    assert manifest.read_text() == updated
+    assert worker.state.setup("alice/repo")["status"] == "ok"
+    assert "v22.22.3" in worker.verify_command("alice/repo")
+    assert worker.state.setup("alice/repo")["verify_command"] == "test -s package.json"

@@ -442,13 +442,24 @@ def _target_for_pin(pin: Pin, target: str) -> str:
 
 
 def _compatible(constraint: str, target: str) -> bool:
+    def allows(token: str) -> bool:
+        token = token.replace(" ", "")
+        if token.startswith(("^", "~")) and version_key(target) < version_key(
+            re.sub(r"[xX*]", "0", token[1:])
+        ):
+            return False
+        if re.fullmatch(r"\d+(?:\.\d+){0,2}(?:\.[xX*])?", token):
+            prefix = token.removesuffix(".x").removesuffix(".X").removesuffix(".*")
+            return target == prefix or target.startswith(prefix + ".")
+        return semver.allows(token, target, "npm")
+
     for clause in constraint.split("||"):
         tokens = re.findall(r"(?:<=|>=|[<>=~^])?\s*(?:\d+(?:\.[\dxX*]+){0,2}|\*)", clause)
         remainder = re.sub(r"(?:<=|>=|[<>=~^])?\s*(?:\d+(?:\.[\dxX*]+){0,2}|\*)", "", clause)
         if (
             tokens
             and not remainder.replace(",", "").strip()
-            and all(semver.allows(token.replace(" ", ""), target, "npm") for token in tokens)
+            and all(allows(token) for token in tokens)
         ):
             return True
     return False
@@ -728,6 +739,51 @@ def _checkout_pins(root: Path, paths: list[str]) -> list[Pin]:
             raise ValueError(f"toolchain configuration references an untracked file: {path}")
         files[path] = _read(_checkout_file(root, path))
     return _map_pins(inventory(files), files, _config(files).get("pin", []))
+
+
+def node_recovery_target(root: Path, paths: list[str], manifests: list[str], current: str) -> str:
+    """Find a newer Node in the running major that respects the repository's pins."""
+    scopes = [PurePosixPath(path).parent for path in manifests]
+    line = current.split(".")[0]
+    release_lines = {}
+    config_path = ".sadoc-toolchains.toml"
+    if config_path in paths:
+        release_lines = _config({config_path: _read(_checkout_file(root, config_path))}).get(
+            "release-line", {}
+        )
+        if not isinstance(release_lines, dict):
+            return ""
+    pins = []
+    for pin in _checkout_pins(root, paths):
+        if pin.tool != "node" or not any(scope.is_relative_to(pin.scope) for scope in scopes):
+            continue
+        if pin.role == "unresolved":
+            return ""
+        pins.append(pin)
+    scopes.extend(PurePosixPath(pin.scope) for pin in pins)
+    declared = [
+        release_lines.get(f"{scope}/node", release_lines.get("node", line)) for scope in scopes
+    ]
+    if any(
+        not isinstance(value, str) or not re.fullmatch(r"\d+(?:\.\d+)?", value)
+        for value in declared
+    ):
+        return ""
+    literals = [
+        pin.version.removeprefix("v").removesuffix(".x") for pin in pins if pin.role == "install"
+    ]
+    for pinned in [*declared, *literals]:
+        if pinned == line or line.startswith(pinned + "."):
+            continue
+        if not pinned.startswith(line + "."):
+            return ""
+        line = pinned
+    target = toolchain_releases.latest("node", line)
+    if not target or version_key(target) <= version_key(current):
+        return ""
+    if any(pin.constraint and not _compatible(pin.constraint, target) for pin in pins):
+        return ""
+    return target
 
 
 def protected_pins(pins: list[Pin], plans: list[dict]) -> list[list[str]]:

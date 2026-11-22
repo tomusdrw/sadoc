@@ -292,3 +292,22 @@ def test_vendored_yarn_path_blocks_package_manager_only_change():
     )
     assert not proposals
     assert ".yarnrc.yml" in blocked[0]
+
+
+def test_node_recovery_honors_configured_release_line_and_engine_floor(tmp_path, monkeypatch):
+    files = {
+        ".sadoc-toolchains.toml": '[release-line]\nnode = "22.22"\n',
+        "package.json": '{"engines":{"node":"^22.22.2"}}',
+    }
+    for path, content in files.items():
+        (tmp_path / path).write_text(content)
+    versions = iter(["22.22.1", "22.22.3"])
+
+    def latest(tool, line):
+        assert (tool, line) == ("node", "22.22")
+        return next(versions)
+
+    monkeypatch.setattr(toolchains.toolchain_releases, "latest", latest)
+    args = (tmp_path, list(files), ["package.json"], "22.14.0")
+    assert toolchains.node_recovery_target(*args) == ""
+    assert toolchains.node_recovery_target(*args) == "22.22.3"
