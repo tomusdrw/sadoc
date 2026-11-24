@@ -596,3 +596,25 @@ def test_isolated_podman_uses_distinct_uid_and_clean_environment(monkeypatch):
     account.pw_uid = 1000
     with pytest.raises(PiError, match="separate unprivileged account"):
         container_runtime_command("podman")
+
+
+def test_isolated_podman_cleanup_starts_from_a_public_directory(tmp_path, monkeypatch):
+    import subprocess
+
+    prefix = ["/usr/bin/sudo", "-n", "-u", "#955", "/usr/bin/podman"]
+    monkeypatch.setattr("sadoc.piworker.container_runtime_command", lambda _: prefix)
+    session = PiSession(
+        tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path, allow_containers=True
+    )
+    monkeypatch.setattr(session, "_build_env", lambda: {"SADOC_CACHE_DIR": str(tmp_path)})
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, "abc123\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+    )
+    monkeypatch.setattr("sadoc.piworker.subprocess.run", run)
+
+    session._cleanup_containers()
+
+    assert [call.kwargs.get("cwd") for call in run.call_args_list] == ["/tmp", "/tmp"]

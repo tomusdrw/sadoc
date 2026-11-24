@@ -669,6 +669,9 @@ class PiSession:
             TMPDIR="/tmp",
         )
         runtime = container_runtime_command(self._container_runtime)
+        # Cleanup only addresses containers by label or ID. The worker does
+        # not need access to the caller's checkout or current directory.
+        cwd = "/tmp" if len(runtime) > 1 else None
         try:
             found = subprocess.run(
                 [
@@ -680,6 +683,7 @@ class PiSession:
                     f"label=io.sadoc.session={self._session_id}",
                 ],
                 env=env,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -691,7 +695,7 @@ class PiSession:
                 removed = subprocess.run(
                     [*runtime, "rm", "--force", "--volumes", *ids],
                     env=env,
-                    cwd=self.cwd,
+                    cwd=cwd,
                     capture_output=True,
                     text=True,
                     timeout=20,
