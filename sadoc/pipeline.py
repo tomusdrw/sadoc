@@ -458,6 +458,8 @@ class Worker:
     def prepare_clone(self, owner: str, repo: str, branch: str) -> Iterator[Git]:
         with workspaces.checkout(self.cfg.workdir, owner, repo) as dest:
             git = Git(dest)
+            if self.cfg.github_app_id:
+                git.github_token = self.gh.app.token
             git.clone(f"https://github.com/{owner}/{repo}.git", branch)
             yield git
 
@@ -1038,7 +1040,9 @@ class Worker:
     def _hand_over_from_dependabot(self, owner: str, repo: str, branch: str) -> None:
         """Switch Dependabot off in a repository this tool takes care of."""
         try:
-            result = dependabot.take_over(self.gh, owner, repo, branch)
+            result = dependabot.take_over(
+                self.gh, owner, repo, branch, security_updates=not self.cfg.github_app_id
+            )
         except Exception as exc:  # noqa: BLE001
             self._safe_log(
                 f"could not switch Dependabot off: {exc}", repo=f"{owner}/{repo}", level="error"
@@ -1452,7 +1456,7 @@ class Worker:
                 # --- take over from Dependabot ---------------------------
                 # Otherwise the two open competing pull requests for the same
                 # dependency.
-                if self.cfg.disable_dependabot:
+                if self.cfg.disable_dependabot and not dry_run:
                     self._hand_over_from_dependabot(owner, repo, default_branch)
 
                 model = self.cfg.model_for("migrate" if breaking_updates else "bump")

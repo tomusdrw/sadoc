@@ -183,9 +183,9 @@ def disable_security_updates(gh, owner: str, repo: str) -> dict:
     return {"status": "failed", "detail": output[:200]}
 
 
-def take_over(gh, owner: str, repo: str, branch: str) -> dict:
+def take_over(gh, owner: str, repo: str, branch: str, *, security_updates: bool = True) -> dict:
     """Everything needed to stop Dependabot competing with this tool."""
     return {
         "version_updates": disable_version_updates_in_repo(gh, owner, repo, branch),
-        "security_updates": disable_security_updates(gh, owner, repo),
+        "security_updates": disable_security_updates(gh, owner, repo) if security_updates else {},
     }

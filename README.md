@@ -153,6 +153,36 @@ Nothing is written outside it except the systemd units in
 [12:00:00]   IN  you/some-repo  (pushed 2026-10-05)
 ```
 
+### GitHub authentication
+
+By default, Sadoc uses the existing `gh` login and Git credentials.
+To run as an installed GitHub App, set the top-level `owner` to the login
+where the app is installed, then add:
+
+```toml
+[github]
+mode = "app"
+app_id = 123456
+```
+
+The app needs repository write access to Contents and Pull requests, and read
+access to Actions, Checks, and Commit statuses. Grant Workflows write access
+if Sadoc updates workflow files. Sadoc discovers repositories from the app
+installation and refreshes its token automatically. App mode uses OpenSSL to
+sign the authentication request.
+
+Before installing the key, stop Sadoc and any active pi sessions. Keep the
+single PEM copy in `~/.sadoc/github-app/private-key.pem` with mode `0600`.
+The directory is hidden from pi and its shell tools. File-based app mode
+requires `sandbox.allow_containers = false`: the host container helper has
+access to the host filesystem. Installations that use rootless containers
+can continue using `gh` with the app credential directory absent.
+
+App mode leaves Dependabot security update settings alone. It can still
+propose changes to scheduled version updates according to
+`disable_dependabot`. Use `sadoc --dry-run run --repo NAME` to try a repo
+without publishing changes.
+
 ### Secrets
 
 Never put credentials in `config.toml`. Use `secrets.env`:

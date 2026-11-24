@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import policy
 from .config import HOME as SADOC_HOME
+from .github_app import KEY_DIR
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SANDBOX_EXTENSION = REPO_ROOT / "extensions" / "sandbox.ts"
@@ -208,7 +209,7 @@ class PiSession:
     # ------------------------------------------------------------- setup
     def _build_env(self) -> dict:
         env = dict(os.environ)
-        if self._scrub_env:
+        if self._scrub_env or KEY_DIR.exists():
             for key in list(env):
                 if key in SECRET_PATTERNS or key.endswith("_API_KEY") or key in self._extra_secrets:
                     env.pop(key, None)
@@ -272,6 +273,8 @@ class PiSession:
         )
 
     def start(self) -> None:
+        if KEY_DIR.exists() and self._allow_containers:
+            raise PiError("keep the GitHub App key out of reach of the host container helper")
         self._write_models_json()
         cmd = [
             "pi",
@@ -287,13 +290,38 @@ class PiSession:
             self.model.model,
             *self._extra_args,
         ]
+        env = self._build_env()
+        if KEY_DIR.exists():
+            # Protect startup context and built-in file tools as well as bash.
+            cmd = [
+                "bwrap",
+                "--bind",
+                "/",
+                "/",
+                "--dev-bind",
+                "/dev",
+                "/dev",
+                "--unshare-pid",
+                "--proc",
+                "/proc",
+                "--die-with-parent",
+                "--tmpfs",
+                str(KEY_DIR.resolve()),
+                "--tmpfs",
+                "/run/user",
+                "--unsetenv",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "--",
+                *cmd,
+                "--no-mcp",
+            ]
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=self.cwd,
-            env=self._build_env(),
+            env=env,
             text=True,
             bufsize=1,
             start_new_session=True,

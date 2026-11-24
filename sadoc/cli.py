@@ -27,6 +27,7 @@ from sadoc import config as config_mod  # noqa: E402
 from sadoc import detect, ecosystems, pipeline, release_check, workspaces  # noqa: E402
 from sadoc.config import ModelSpec  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
+from sadoc.github_app import GitHubApp, GitHubAppError  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from sadoc.state import State  # noqa: E402
 
@@ -549,7 +550,8 @@ def main() -> int:
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        gh = Gh()
+        app = GitHubApp(cfg.github_app_id, cfg.owner) if cfg.github_app_id else None
+        gh = Gh(app=app) if app else Gh()
     except GhError as exc:
         _log(str(exc))
         return 1
@@ -562,6 +564,9 @@ def main() -> int:
                 _log(f"could not clean disposable checkouts: {exc}", level="error")
                 return 1
         return args.func(args, cfg, gh, state)
+    except GitHubAppError as exc:
+        _log(str(exc), level="error")
+        return 1
     finally:
         state.close()
 

@@ -529,3 +529,28 @@ def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):
     diagnostic = json.loads(session.diagnostics())["prompt"]
     assert diagnostic["duration_s"] == 25
     assert "still working" in diagnostic["text_tail"]
+
+
+def test_github_app_key_hidden_from_pi_shell(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    if not shutil.which("pi") or not shutil.which("bwrap"):
+        pytest.skip("pi and bubblewrap are needed for the RPC sandbox smoke test")
+    from tempfile import TemporaryDirectory
+
+    # A key under /tmp would also be hidden by the inner shell sandbox.
+    with TemporaryDirectory(dir=Path.home()) as location:
+        key_dir = Path(location)
+        marker = key_dir / "private-key.pem"
+        marker.write_text("test key")
+        monkeypatch.setattr("sadoc.piworker.KEY_DIR", key_dir)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        session = PiSession(
+            workspace, PiModel("test", "http://localhost:1", "test"), tmp_path / "agent"
+        )
+        with session:
+            result = session.bash(f"test ! -r {marker}", timeout=20)
+            assert result["data"]["exitCode"] == 0
+        assert marker.read_text() == "test key"

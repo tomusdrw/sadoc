@@ -7,12 +7,14 @@ without re-implementing GitHub's REST surface.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 
 from . import sanitize
+from .github_app import GitHubApp
 
 _PR_SIGNATURE = "Opened by [Sadoc](https://github.com/tomusdrw/sadoc)."
 
@@ -56,19 +58,22 @@ def is_unusable_repository(error: Exception) -> bool:
 @dataclass
 class Gh:
     binary: str = "gh"
+    app: GitHubApp | None = None
 
     def __post_init__(self) -> None:
         if shutil.which(self.binary) is None:
             raise GhError(f"{self.binary} not found on PATH")
 
     # ---------------------------------------------------------------- raw
+    def _invoke(self, args: list[str], **kwargs) -> subprocess.CompletedProcess:
+        if self.app:
+            env = {**os.environ, "GH_TOKEN": self.app.token(), "GH_HOST": "github.com"}
+            env.pop("GH_DEBUG", None)
+            kwargs["env"] = env
+        return subprocess.run([self.binary, *args], capture_output=True, text=True, **kwargs)
+
     def run(self, *args: str, check: bool = True, timeout: int = 300) -> str:
-        proc = subprocess.run(
-            [self.binary, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        proc = self._invoke(list(args), timeout=timeout)
         if check and proc.returncode != 0:
             raise GhError(
                 f"gh {' '.join(args)} -> exit {proc.returncode}\n"
@@ -78,7 +83,7 @@ class Gh:
 
     def run_status(self, *args: str, timeout: int = 120) -> tuple[int, str]:
         """Run a gh command and report the exit code instead of raising."""
-        proc = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=timeout)
+        proc = self._invoke(list(args), timeout=timeout)
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
     def api(self, endpoint: str, method: str = "GET", check: bool = True, **params) -> object:
@@ -143,6 +148,26 @@ class Gh:
     # ------------------------------------------------------------- repos
     def my_repos(self, limit: int = 500, owner: str | None = None) -> list[dict]:
         """Repos visible to the authenticated user, or an owner's repos."""
+        if self.app:
+            if owner and owner.casefold() != self.app.owner.casefold():
+                return []
+            repos = []
+            for page in range(1, (limit + 99) // 100 + 1):
+                batch = self.api("installation/repositories", per_page=100, page=page)
+                for repo in batch["repositories"]:
+                    repos.append(
+                        {
+                            "name": repo["name"],
+                            "owner": repo["owner"],
+                            "isArchived": repo["archived"],
+                            "isFork": repo["fork"],
+                            "pushedAt": repo["pushed_at"],
+                            "defaultBranchRef": {"name": repo["default_branch"]},
+                        }
+                    )
+                if len(batch["repositories"]) < 100:
+                    break
+            return repos[:limit]
         args = ["repo", "list"]
         if owner:
             args.append(owner)
@@ -216,6 +241,20 @@ class Gh:
         if sanitize.contains_leak(title) or sanitize.contains_leak(body):
             raise GhError("pull request text contains internal detail")
         body = f"{body}\n\n{_PR_SIGNATURE}" if body else _PR_SIGNATURE
+        if self.app:
+            pr = self.api(
+                f"repos/{owner}/{repo}/pulls",
+                method="POST",
+                title=title,
+                body=body,
+                head=head,
+                base=base,
+                draft=draft,
+            )
+            if labels:
+                self.add_labels(owner, repo, pr["number"], labels)
+            return {"url": pr["html_url"], "raw": json.dumps(pr)}
+
         args = [
             "pr",
             "create",
@@ -333,7 +372,7 @@ class Gh:
         ]
         if fail_fast:
             args.append("--fail-fast")
-        proc = subprocess.run([self.binary, *args], capture_output=True, text=True)
+        proc = self._invoke(args)
         return proc.returncode, (proc.stdout + proc.stderr)
 
     def pr_merge(
@@ -423,9 +462,8 @@ class Gh:
             return
         # The endpoint wants an array, so the body has to be JSON.
         payload = json.dumps({"labels": list(labels)})
-        proc = subprocess.run(
+        proc = self._invoke(
             [
-                self.binary,
                 "api",
                 f"repos/{owner}/{repo}/issues/{number}/labels",
                 "--method",
@@ -434,8 +472,6 @@ class Gh:
                 "-",
             ],
             input=payload,
-            capture_output=True,
-            text=True,
             timeout=60,
         )
         if proc.returncode != 0:
@@ -486,10 +522,8 @@ class Gh:
         return data.get("jobs", [])
 
     def run_logs_failed(self, owner: str, repo: str, run_id: str, max_bytes: int = 40000) -> str:
-        proc = subprocess.run(
-            [self.binary, "run", "view", run_id, "--repo", f"{owner}/{repo}", "--log-failed"],
-            capture_output=True,
-            text=True,
+        proc = self._invoke(
+            ["run", "view", run_id, "--repo", f"{owner}/{repo}", "--log-failed"],
         )
         out = proc.stdout or ""
         if len(out) > max_bytes:
@@ -520,15 +554,12 @@ class Gh:
 
     def job_logs(self, owner: str, repo: str, job_id: str) -> str:
         """The logs of a single job."""
-        proc = subprocess.run(
+        proc = self._invoke(
             [
-                self.binary,
                 "api",
                 f"repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
                 "--allow-escape-sequences",
             ],
-            capture_output=True,
-            text=True,
             timeout=120,
         )
         if proc.returncode != 0:

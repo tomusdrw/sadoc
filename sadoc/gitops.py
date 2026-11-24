@@ -6,8 +6,11 @@ it can only edit files inside the clone.
 
 from __future__ import annotations
 
+import base64
+import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,13 +41,37 @@ def _split_patch(patch: str) -> tuple[str, list[str]]:
 @dataclass
 class Git:
     path: Path
+    github_token: Callable[[], str] | None = None
 
-    def _run(self, *args, check: bool = True, timeout: int = 600) -> str:
+    def _network_env(self) -> dict[str, str] | None:
+        if self.github_token is None:
+            return None
+        credentials = base64.b64encode(f"x-access-token:{self.github_token()}".encode()).decode()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("GIT_TRACE", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+            and key not in ("GIT_CONFIG_PARAMETERS", "GIT_CURL_VERBOSE")
+        }
+        env.update(
+            GIT_TERMINAL_PROMPT="0",
+            GIT_CONFIG_COUNT="3",
+            GIT_CONFIG_KEY_0="credential.helper",
+            GIT_CONFIG_VALUE_0="",
+            GIT_CONFIG_KEY_1="http.followRedirects",
+            GIT_CONFIG_VALUE_1="false",
+            GIT_CONFIG_KEY_2="http.https://github.com/.extraHeader",
+            GIT_CONFIG_VALUE_2=f"Authorization: Basic {credentials}",
+        )
+        return env
+
+    def _run(self, *args, check: bool = True, timeout: int = 600, network: bool = False) -> str:
         proc = subprocess.run(
             ["git", "-C", str(self.path), *args],
             capture_output=True,
             text=True,
             timeout=timeout,
+            **({"env": self._network_env()} if network and self.github_token else {}),
         )
         if check and proc.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:1500]}")
@@ -60,12 +87,13 @@ class Git:
             capture_output=True,
             text=True,
             timeout=900,
+            **({"env": self._network_env()} if self.github_token else {}),
         )
         if proc.returncode != 0:
             raise GitError(f"clone failed: {proc.stderr.strip()[:1500]}")
 
     def fetch(self) -> None:
-        self._run("fetch", "--all", "--prune", timeout=300)
+        self._run("fetch", "--all", "--prune", timeout=300, network=True)
 
     def fetch_branch(self, branch: str) -> bool:
         """Fetch a single remote branch into refs/remotes/origin/<branch>.
@@ -88,6 +116,7 @@ class Git:
             capture_output=True,
             text=True,
             timeout=300,
+            **({"env": self._network_env()} if self.github_token else {}),
         )
         if proc.returncode != 0:
             return False
@@ -114,6 +143,7 @@ class Git:
             f"refs/heads/{branch}",
             check=False,
             timeout=120,
+            network=True,
         )
         return bool(out.strip())
 
@@ -243,7 +273,7 @@ class Git:
         args = ["push", "--set-upstream", "origin", branch]
         if force:
             args.insert(1, "--force-with-lease")
-        return self._run(*args, timeout=600)
+        return self._run(*args, timeout=600, network=True)
 
     def commit_sha(self, ref: str = "HEAD") -> str:
         return self._run("rev-parse", ref).strip()
