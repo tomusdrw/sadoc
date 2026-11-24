@@ -37,6 +37,9 @@ const TOOL_CACHE = process.env.SADOC_CACHE_DIR || "/tmp/depsbot-toolcache";
 // onto the machine. Off by default.
 const ALLOW_CONTAINERS = process.env.SADOC_ALLOW_CONTAINERS === "1";
 const RUNTIME = process.env.SADOC_CONTAINER_RUNTIME || "podman";
+const RUNTIME_COMMAND: string[] = process.env.SADOC_CONTAINER_COMMAND
+	? JSON.parse(process.env.SADOC_CONTAINER_COMMAND)
+	: [RUNTIME];
 const DISCOVERY = process.env.SADOC_DISCOVERY === "1";
 const COMMAND_TIMEOUT = DISCOVERY ? 900 : 1800;
 const SESSION_ID = process.env.SADOC_SESSION_ID || String(process.pid);
@@ -340,7 +343,7 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 	const limit = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 1800) : COMMAND_TIMEOUT;
 	let child;
 	try {
-		child = spawn("timeout", ["--foreground", "--kill-after=5s", `${limit}s`, RUNTIME, ...argv], { cwd, env: containerEnvironment() });
+		child = spawn("timeout", ["--foreground", "--kill-after=5s", `${limit}s`, ...RUNTIME_COMMAND, ...argv], { cwd, env: containerEnvironment() });
 	} catch (exc) {
 		conn.end(
 			JSON.stringify({ code: 1, stdout: "", stderr: `sadoc: cannot run ${RUNTIME}: ${exc}\n` }),

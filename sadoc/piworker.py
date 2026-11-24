@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import queue
 import signal
 import subprocess
@@ -52,6 +53,35 @@ SECRET_PATTERNS = (
     "SMTP_APP_PASSWORD",
     "SMTP_PASSWORD",
 )
+
+
+def container_runtime_command(runtime: str) -> list[str]:
+    worker = os.environ.get("SADOC_PODMAN_USER")
+    if not worker:
+        return [runtime]
+    try:
+        account = pwd.getpwnam(worker)
+    except KeyError:
+        raise PiError(f"unknown Podman worker account: {worker}") from None
+    if runtime != "podman" or account.pw_uid in (0, os.getuid(), os.geteuid()):
+        raise PiError("the isolated runtime must be Podman under a separate unprivileged account")
+    runtime_dir = f"/run/user/{account.pw_uid}"
+    return [
+        "/usr/bin/sudo",
+        "-n",
+        "-u",
+        f"#{account.pw_uid}",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "PATH=/usr/bin:/bin",
+        f"HOME={account.pw_dir}",
+        f"USER={worker}",
+        f"LOGNAME={worker}",
+        f"XDG_RUNTIME_DIR={runtime_dir}",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime_dir}/bus",
+        "/usr/bin/podman",
+    ]
 
 
 class PiError(RuntimeError):
@@ -236,8 +266,13 @@ class PiSession:
         # The container rules are owned by sadoc.policy and handed over here, so
         # there is one list of them rather than one in Python and one in the
         # extension.
+        env.pop("SADOC_PODMAN_USER", None)
+        env.pop("SADOC_CONTAINER_COMMAND", None)
         if self._allow_containers:
             env["SADOC_CONTAINER_POLICY"] = policy.policy_json()
+            env["SADOC_CONTAINER_COMMAND"] = json.dumps(
+                container_runtime_command(self._container_runtime)
+            )
         else:
             env.pop("SADOC_CONTAINER_POLICY", None)
         return env
@@ -633,11 +668,11 @@ class PiSession:
             XDG_RUNTIME_DIR=str(containers / "run"),
             TMPDIR="/tmp",
         )
-        runtime = self._container_runtime
+        runtime = container_runtime_command(self._container_runtime)
         try:
             found = subprocess.run(
                 [
-                    runtime,
+                    *runtime,
                     "ps",
                     "--all",
                     "--quiet",
@@ -654,8 +689,9 @@ class PiSession:
             ids = found.stdout.split()
             if ids:
                 removed = subprocess.run(
-                    [runtime, "rm", "--force", "--volumes", *ids],
+                    [*runtime, "rm", "--force", "--volumes", *ids],
                     env=env,
+                    cwd=self.cwd,
                     capture_output=True,
                     text=True,
                     timeout=20,

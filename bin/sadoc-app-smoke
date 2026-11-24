@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: bin/sadoc-app-smoke [--key PEM --app-id ID --repo OWNER/REPO]
+Usage: bin/sadoc-app-smoke [--key PEM --app-id ID --repo OWNER/REPO] [--podman-user USER]
 
 Run from your regular account. The script prompts for sudo locally.
 Without a key it generates a temporary RSA key and tests isolation and Podman.
@@ -16,15 +16,17 @@ HELP
 key=
 app_id=
 repo=
+worker=
 while (($#)); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --key|--app-id|--repo)
+    --key|--app-id|--repo|--podman-user)
       if (($# < 2)); then usage >&2; exit 2; fi
       case "$1" in
         --key) key="$2" ;;
         --app-id) app_id="$2" ;;
         --repo) repo="$2" ;;
+        --podman-user) worker="$2" ;;
       esac
       shift 2
       ;;
@@ -32,12 +34,11 @@ while (($#)); do
   esac
 done
 if [[ -n "$key$app_id$repo" ]]; then
-  if [[ ! -f "$key" || ! -r "$key" || ! "$app_id" =~ ^[1-9][0-9]*$ ||
+  if [[ -z "$key" || ! "$app_id" =~ ^[1-9][0-9]*$ ||
         ! "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ ]]; then
     usage >&2
     exit 2
   fi
-  key="$(realpath -- "$key")"
 fi
 if ((EUID == 0)); then
   echo "Run this script as your regular user, without a sudo prefix." >&2
@@ -55,7 +56,21 @@ if [[ ! -S "$runtime/bus" ]]; then
 fi
 
 sudo -v
+if [[ -n "$key" ]]; then
+  key="$(sudo realpath -e -- "$key")"
+  if ! sudo test -f "$key"; then
+    echo "Expected a regular PEM file." >&2
+    exit 2
+  fi
+fi
 trial="$(mktemp -d)"
+if [[ -n "$worker" ]]; then
+  if [[ ! "$worker" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+    rmdir -- "$trial"
+    exit 2
+  fi
+  setfacl -m "u:$worker:--x" -- "$trial"
+fi
 root_trial=
 started=false
 cleanup() {
@@ -87,6 +102,7 @@ fi
 cat > "$trial/check.py" <<'PY'
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -107,15 +123,34 @@ print("OK: the unprivileged orchestrator signed using its protected descriptor."
 
 work = trial / "work"
 work.mkdir()
+if worker := os.environ.get("SADOC_PODMAN_USER"):
+    subprocess.run(["setfacl", "-m", f"u:{worker}:r-x", "--", str(work)], check=True)
+    (work / "marker").write_text("sadoc smoke")
+    private = trial / "private"
+    private.mkdir(mode=0o700)
+    marker = private / "marker"
+    marker.write_text("orchestrator only")
+    subprocess.run(
+        ["/usr/bin/sudo", "-n", "-u", worker, "--", "/usr/bin/env", "-i",
+         "/usr/bin/test", "!", "-r", str(marker)],
+        check=True,
+    )
+    print(f"OK: Podman account {worker} cannot read the private orchestrator directory.", flush=True)
 session = PiSession(
     work, PiModel("test", "http://localhost:1", "test"), trial / "agent",
     allow_containers=True,
 )
 with session:
+    command = 'podman run --rm --network none --user 1234 '
+    if worker:
+        command += f'-v {shlex.quote(str(work) + ":/work:ro")} '
+        command += "docker.io/library/alpine:3.22 sh -c 'test -r /work/marker && id -u'"
+    else:
+        command += "docker.io/library/alpine:3.22 id -u"
     check = session.bash(
         f'test ! -r {shlex.quote(str(key))} && '
         'test -z "${SADOC_GITHUB_APP_KEY_FD:-}" && '
-        'podman run --rm --network none --user 1234 docker.io/library/alpine:3.22 id -u',
+        + command,
         timeout=240,
     )["data"]
     if check["exitCode"] != 0 or check["output"].strip().splitlines()[-1:] != ["1234"]:
@@ -163,6 +198,7 @@ sudo systemd-run --wait --pipe --collect --unit="$unit" \
   --property="OpenFile=$protected_key:sadoc-github-key:read-only" \
   --setenv="XDG_RUNTIME_DIR=$runtime" \
   --setenv="DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+  --setenv="SADOC_PODMAN_USER=$worker" \
   --setenv="SADOC_GITHUB_APP_KEY_FD=3" \
   --setenv="SADOC_CACHE_DIR=$trial/toolcache" \
   --setenv="CONTAINERS_STORAGE_CONF=$trial/storage.conf" \

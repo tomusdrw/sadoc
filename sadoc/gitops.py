@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 class GitError(RuntimeError):
@@ -91,11 +92,22 @@ class Git:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             shutil.rmtree(self.path)
+        if self.git_dir is None:
+            self._clone_to(self.path, repo_url, branch, depth)
+            return
+
+        # Clone and copy trusted metadata privately before opening the file
+        # tree to the container worker. The checkout gets its own Git metadata.
+        with TemporaryDirectory(prefix="sadoc-clone-", dir="/tmp") as staging:
+            checkout = Path(staging) / "checkout"
+            self._clone_to(checkout, repo_url, branch, depth)
+            shutil.copytree(checkout / ".git", self.git_dir, dirs_exist_ok=True)
+            shutil.copytree(checkout, self.path, symlinks=True)
+
+    def _clone_to(self, destination: Path, repo_url: str, branch: str, depth: int) -> None:
         args = ["git", "clone", "--depth", str(depth), "--branch", branch]
-        if self.git_dir is not None:
-            args += ["--separate-git-dir", str(self.git_dir)]
         proc = subprocess.run(
-            [*args, repo_url, str(self.path)],
+            [*args, repo_url, str(destination)],
             capture_output=True,
             text=True,
             timeout=900,

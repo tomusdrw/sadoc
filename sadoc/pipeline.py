@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
+import subprocess
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -460,9 +462,41 @@ class Worker:
             url = f"https://github.com/{owner}/{repo}.git"
             if self.cfg.github_app_id:
                 # App-authenticated Git never follows the checkout's .git pointer.
-                with TemporaryDirectory(prefix=".git-", dir=dest.parent) as private:
+                with TemporaryDirectory(prefix="sadoc-git-", dir="/tmp") as private:
                     git = Git(dest, github_token=self.gh.app.token, git_dir=Path(private).resolve())
                     git.clone(url, branch)
+                    if self.cfg.allow_containers and (
+                        worker := os.environ.get("SADOC_PODMAN_USER")
+                    ):
+                        try:
+                            subprocess.run(
+                                ["setfacl", "-R", "-P", "-m", f"u:{worker}:rwX", "--", str(dest)],
+                                check=True,
+                                capture_output=True,
+                                timeout=60,
+                            )
+                            subprocess.run(
+                                [
+                                    "find",
+                                    str(dest),
+                                    "-type",
+                                    "d",
+                                    "-exec",
+                                    "setfacl",
+                                    "-P",
+                                    "-m",
+                                    f"d:u:{worker}:rwx,d:u:{os.getuid()}:rwx",
+                                    "{}",
+                                    "+",
+                                ],
+                                check=True,
+                                capture_output=True,
+                                timeout=60,
+                            )
+                        except (OSError, subprocess.SubprocessError) as exc:
+                            raise GitError(
+                                "could not share the disposable checkout with Podman"
+                            ) from exc
                     yield git
             else:
                 git = Git(dest)

@@ -179,15 +179,18 @@ requires `sandbox.allow_containers = false`.
 For an installation that uses rootless Podman, put the PEM in a root-only
 directory such as `/etc/sadoc`, with the file owned by root and mode `0600`.
 Let the system manager open it for Sadoc with `OpenFile=` (systemd 253 or
-later). The service itself and Podman run as the ordinary user. In the
-system service, add these settings to the existing Sadoc command and
-environment, substituting the service account, UID, and key path:
+later). Run the service as the ordinary user and the rootless Podman commands as
+a separate unprivileged account. Give the Podman account a private home,
+subordinate UIDs and GIDs, and a running user manager. In the system service,
+add these settings to the existing Sadoc command and environment:
 
 ```ini
 [Service]
 User=your-login
 OpenFile=/etc/sadoc/github-app.pem:sadoc-github-key:read-only
 Environment=SADOC_GITHUB_APP_KEY_FD=3
+Environment=SADOC_PODMAN_USER=sadoc-podman
+Environment=SADOC_CACHE_DIR=/var/lib/sadoc-shared/cache
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ```
@@ -198,14 +201,20 @@ the service user's checkout and environment file in the system units.
 The system manager expands `%h` to its own home directory. Keep one copy of the
 key, in the root-only location. The Python command marks the descriptor
 close-on-exec, and pi receives neither the key nor the descriptor
-environment. Keep the user manager available for rootless Podman.
+environment. Sadoc uses non-interactive sudo to invoke Podman as
+`SADOC_PODMAN_USER` with an empty environment and explicit home and
+runtime settings. Limit sudo authorization to that account. Keep the
+checkout parent traversable by the account and the cache shared using
+POSIX ACLs. Sadoc grants the worker access to each disposable checkout
+and keeps the authenticated Git metadata in a private directory.
 
 Before switching the timers, run `bin/sadoc-app-smoke` as the regular user
 on the deployment machine. It uses local sudo to create a transient system
 service that invokes the nightly runner with a dummy key and isolated
 Podman storage. Add
 `--key PATH --app-id ID --repo OWNER/REPO` to test app access and a dry-run
-push to one repository.
+push to one repository. Add `--podman-user USER` to exercise the
+separate account and verify that it can mount the disposable checkout.
 
 App mode leaves Dependabot security update settings alone. It can still
 propose changes to scheduled version updates according to

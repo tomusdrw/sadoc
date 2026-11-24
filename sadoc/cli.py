@@ -29,6 +29,7 @@ from sadoc.config import ModelSpec  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.github_app import GitHubApp, GitHubAppError, protect_key_descriptor  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
+from sadoc.piworker import PiError, container_runtime_command  # noqa: E402
 from sadoc.state import State  # noqa: E402
 
 
@@ -556,13 +557,20 @@ def main() -> int:
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        if (
+            cfg.github_app_id
+            and cfg.allow_containers
+            and args.command in {"run", "monitor", "doctor", "remind"}
+            and len(container_runtime_command(cfg.container_runtime)) == 1
+        ):
+            raise PiError("GitHub App jobs with containers require SADOC_PODMAN_USER")
         app = (
             GitHubApp(cfg.github_app_id, cfg.owner, require_protected_key=cfg.allow_containers)
             if cfg.github_app_id
             else None
         )
         gh = Gh(app=app) if app else Gh()
-    except (GhError, GitHubAppError) as exc:
+    except (GhError, GitHubAppError, PiError) as exc:
         _log(str(exc))
         return 1
     state = State(cfg.state_db)

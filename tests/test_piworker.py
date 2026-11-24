@@ -574,3 +574,25 @@ def test_protected_key_environment_does_not_reach_container_worker(tmp_path, mon
     assert KEY_FD_ENV not in env
     assert "LISTEN_FDNAMES" not in env
     assert "GH_TOKEN" not in env
+
+
+def test_isolated_podman_uses_distinct_uid_and_clean_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    from sadoc.piworker import container_runtime_command
+
+    monkeypatch.setenv("SADOC_PODMAN_USER", "sadoc-podman")
+    monkeypatch.setattr("sadoc.piworker.os.getuid", lambda: 1000)
+    monkeypatch.setattr("sadoc.piworker.os.geteuid", lambda: 1000)
+    account = SimpleNamespace(pw_uid=1500, pw_dir="/var/lib/sadoc-podman")
+    monkeypatch.setattr("sadoc.piworker.pwd.getpwnam", lambda _: account)
+
+    command = container_runtime_command("podman")
+    assert command[:7] == ["/usr/bin/sudo", "-n", "-u", "#1500", "--", "/usr/bin/env", "-i"]
+    assert "HOME=/var/lib/sadoc-podman" in command
+    assert "XDG_RUNTIME_DIR=/run/user/1500" in command
+    assert command[-1] == "/usr/bin/podman"
+
+    account.pw_uid = 1000
+    with pytest.raises(PiError, match="separate unprivileged account"):
+        container_runtime_command("podman")
