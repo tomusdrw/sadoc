@@ -1,4 +1,4 @@
-Resolve merge conflicts in an existing dependency-update pull request.
+Resolve merge conflicts in an existing pull request.
 
 The orchestrator has started a merge of {{BASE}} into this PR. Preserve changes
 from both branches, including new tests, service settings and deployment gates.

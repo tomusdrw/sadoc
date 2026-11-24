@@ -1100,7 +1100,7 @@ class Worker:
 
         # Something Sadoc already opened is probably the same problem.
         for pr in self.gh.pr_list(owner, repo, state="open"):
-            if (pr.get("headRefName") or "").startswith(f"deps/{repo}/"):
+            if (pr.get("headRefName") or "").startswith((f"deps/{repo}/", f"fix/{repo}/")):
                 result["state"] = "already_open"
                 result["pr"] = pr.get("url", "")
                 result["detail"] = f"PR #{pr.get('number')} is already open"
@@ -1184,9 +1184,12 @@ class Worker:
                     branch,
                 )
                 result["pr"] = pr.get("url", "")
+                number = self._pr_number(result["pr"])
+                if not number:
+                    raise PiError("could not determine the number of the repair PR")
                 self.state.record_pr(
                     f"{owner}/{repo}",
-                    0,
+                    number,
                     tier="D",
                     title=pr.get("url", ""),
                     url=pr.get("url", ""),
@@ -2111,6 +2114,8 @@ class Worker:
         updates: list[Update],
         git: Git,
         session: PiSession,
+        *,
+        dry_run: bool = False,
     ) -> str:
         """Feed the failed CI logs back to the model and push a fix."""
         logs = self.failed_ci_logs(owner, repo, number)
@@ -2125,6 +2130,8 @@ class Worker:
         self.state.log(f"fixci: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return "model made no changes"
+        if dry_run:
+            return result.text[:500]
         if branch.startswith("toolchains/"):
             self._verify_toolchain_repair(
                 owner,
@@ -2230,6 +2237,8 @@ class Worker:
         git: Git,
         session: PiSession,
         comments: list[dict],
+        *,
+        dry_run: bool = False,
     ) -> tuple[bool, str]:
         """Return whether changes were pushed, separately from the diagnostic note."""
         if not comments:
@@ -2243,6 +2252,8 @@ class Worker:
         self.state.log(f"review: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return False, "model made no changes"
+        if dry_run:
+            return False, result.text[:500]
         if branch.startswith("toolchains/"):
             self._verify_toolchain_repair(
                 owner,
@@ -2270,7 +2281,7 @@ class Worker:
             return False, "PR is a draft"
         if view.get("mergeable") != "MERGEABLE":
             return False, f"mergeable={view.get('mergeable')}"
-        if view.get("mergeStateStatus") in ("BLOCKED", "DIRTY"):
+        if view.get("mergeStateStatus") in ("BEHIND", "BLOCKED", "DIRTY"):
             return False, f"mergeStateStatus={view.get('mergeStateStatus')}"
         if self.cfg.require_checks:
             checks = self.gh.pr_checks(owner, repo, number)
@@ -2386,7 +2397,7 @@ class Worker:
             return f"conflicts, already tried {attempts} times - leaving it for a human"
         details = self.state.pr_details(repo, number)
         targets = json.loads(details["updates"] or "[]") if details else []
-        if not targets:
+        if not targets and row_get(repo_row, "tier") != "D":
             return "conflicts need the original PR update targets; leaving it for a human"
         toolchain_updates = []
         if branch.startswith("toolchains/"):
@@ -2520,7 +2531,8 @@ class Worker:
                 self.state.record_pr(
                     repo, number, conflict_attempts=0, checks_state="pending", mergeable="UNKNOWN"
                 )
-                return "base merged and conflicts resolved; waiting for CI on the new commit"
+                action = "base merged and conflicts resolved" if conflicts else "base merged"
+                return f"{action}; waiting for CI on the new commit"
             finally:
                 try:
                     session.close()
@@ -2578,34 +2590,39 @@ class Worker:
         )
 
         # Old-head CI cannot validate a resolution against the current base.
-        if view.get("mergeable") == "CONFLICTING":
+        if view.get("mergeable") == "CONFLICTING" or view.get("mergeStateStatus") == "BEHIND":
             return self.repair_conflicts(repo_row, view, dry_run=dry_run)
-
-        # A pull request that has gone green can merge itself.
-        if ci_state == "pass" and not branch.startswith("toolchains/"):
-            outcome = self.maybe_auto_merge(owner, name, number, tier)
-            if outcome == "auto-merged":
-                return "auto-merged"
 
         comments = self.collect_review_comments(owner, name, number)
         known = self.state.known_comment_ids(repo, number)
         fresh = [c for c in comments if str(c.get("id")) not in known]
+        if (
+            not fresh
+            and ci_state == "pass"
+            and not dry_run
+            and not branch.startswith("toolchains/")
+        ):
+            outcome = self.maybe_auto_merge(owner, name, number, tier)
+            if outcome == "auto-merged":
+                return "auto-merged"
         if not fresh and ci_state != "fail":
             return f"ci={ci_state} no new comments"
 
-        default_branch = self.gh.default_branch(owner, name)
+        default_branch = view.get("baseRefName") or self.gh.default_branch(owner, name)
+        repairing_ci = not fresh and ci_state == "fail"
 
         # Decide whether the model is needed at all before starting it.
-        if ci_state == "fail" and not fresh:
+        if repairing_ci:
             attempts = row_get(repo_row, "ci_attempts") or 0
             if attempts >= self.cfg.max_attempts:
                 return f"ci=fail, already tried {attempts} times - leaving it for a human"
-            workflow = self._failing_workflow(owner, name, number)
-            base_broken, base_detail = self.base_branch_is_also_failing(
-                owner, name, default_branch, workflow=workflow
-            )
-            if base_broken:
-                return f"ci=fail, the base branch is already failing ({base_detail})"
+            if tier != "D":
+                workflow = self._failing_workflow(owner, name, number)
+                base_broken, base_detail = self.base_branch_is_also_failing(
+                    owner, name, default_branch, workflow=workflow
+                )
+                if base_broken:
+                    return f"ci=fail, the base branch is already failing ({base_detail})"
 
         if dry_run and branch.startswith("toolchains/"):
             return f"ci={ci_state} (dry run)"
@@ -2625,7 +2642,7 @@ class Worker:
                 return f"branch {branch} not found on the remote"
             git.create_branch(branch, start_point=f"origin/{branch}")
 
-            model = self.cfg.model_for("fixci" if ci_state == "fail" else "review")
+            model = self.cfg.model_for("fixci" if repairing_ci else "review")
             spec = PiModel(
                 name=f"depsbot-{model.provider}",
                 base_url=model.base_url,
@@ -2634,7 +2651,7 @@ class Worker:
                 max_tokens=model.max_tokens,
                 reasoning=model.reasoning,
             )
-            updates = self._updates_for_pr(repo, tier, number=number)
+            updates = [] if tier == "D" else self._updates_for_pr(repo, tier, number=number)
             if branch.startswith("toolchains/") and not any(u.toolchain_plan for u in updates):
                 return "coordinated toolchain plan is missing; rescan required"
             session = PiSession(
@@ -2648,21 +2665,38 @@ class Worker:
             )
             try:
                 session.start()
-                if ci_state == "fail":
+                if repairing_ci:
                     note = self.fix_ci(
-                        owner, name, number, branch, default_branch, updates, git, session
+                        owner,
+                        name,
+                        number,
+                        branch,
+                        default_branch,
+                        updates,
+                        git,
+                        session,
+                        dry_run=dry_run,
                     )
-                    self.state.bump_ci_attempts(repo, number)
                     if dry_run:
                         return f"ci=fail (dry run) {note[:120]}"
+                    self.state.bump_ci_attempts(repo, number)
                     new_state = self.watch_ci(owner, name, number, timeout_s=1800)
                     self.state.record_pr(
                         repo, number, checks_state=new_state, updated_at=time.time()
                     )
                     return f"ci was fail, now {new_state}"
-                if comments:
+                if fresh:
                     changed, note = self.address_reviews(
-                        owner, name, number, branch, default_branch, updates, git, session, fresh
+                        owner,
+                        name,
+                        number,
+                        branch,
+                        default_branch,
+                        updates,
+                        git,
+                        session,
+                        fresh,
+                        dry_run=dry_run,
                     )
                     if dry_run:
                         return f"review (dry run): {note[:160]}"

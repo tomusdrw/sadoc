@@ -11,3 +11,23 @@ def test_monitor_prioritizes_unseen_then_least_recently_checked(tmp_path):
         assert [r["number"] for r in state.open_prs("o/r")] == [3, 1, 2]
     finally:
         state.close()
+
+
+def test_existing_doctor_prs_recover_their_number_when_state_reopens(tmp_path):
+    path = tmp_path / "state.db"
+    with_old_rows = State(path)
+    with_old_rows.record_pr(
+        "o/r", 0, tier="D", branch="fix/r/old", url="https://github.com/o/r/pull/684"
+    )
+    with_old_rows.record_pr(
+        "o/s", 0, tier="D", branch="fix/s/old", url="https://github.com/o/s/pull/23"
+    )
+    with_old_rows.record_pr("o/s", 23, tier="D", branch="fix/s/new", state="closed")
+    with_old_rows.close()
+
+    for _ in range(2):
+        state = State(path)
+        assert [(r["repo"], r["number"], r["branch"]) for r in state.open_prs()] == [
+            ("o/r", 684, "fix/r/old")
+        ]
+        state.close()

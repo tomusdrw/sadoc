@@ -86,3 +86,33 @@ def test_doctor_reports_agent_failure_without_claiming_a_failed_repair(tmp_path,
         gh.open_pr.assert_not_called()
     finally:
         st.close()
+
+
+def test_doctor_tracks_number_from_created_pr(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from sadoc.config import Config
+    from sadoc.pipeline import Worker
+    from sadoc.state import State
+
+    gh = Mock()
+    gh.default_branch.return_value = "main"
+    gh.pr_list.return_value = []
+    gh.open_pr.return_value = {"url": "https://github.com/o/r/pull/684"}
+    monkeypatch.setattr(
+        doctor, "diagnose", lambda *a: doctor.Diagnosis(repo="o/r", state=doctor.FIXABLE)
+    )
+    session = Mock()
+    session.prompt.return_value = SimpleNamespace(text="Fixed.")
+    monkeypatch.setattr("sadoc.pipeline.PiSession", lambda **kwargs: session)
+    state = State(tmp_path / "state.db")
+    try:
+        worker = Worker(Config(), gh, state)
+        git = Mock(path=tmp_path)
+        git.changed_files.return_value = ["test.py"]
+        worker.prepare_clone = Mock(return_value=nullcontext(git))
+        worker.doctor_repo("o", "r")
+        assert [r["number"] for r in state.open_prs()] == [684]
+    finally:
+        state.close()

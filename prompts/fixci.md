@@ -2,7 +2,7 @@ You are fixing a failing GitHub Actions CI run on a pull request.
 
 ## Context
 
-This pull request updates dependencies:
+Dependency updates associated with this pull request, if any:
 
 {{UPDATES}}
 
@@ -31,9 +31,9 @@ The CI run failed. The failed step logs are below.
    while package-manager-cache controls automatic caching. Do not guess inputs.
 4. Verify locally by running the failing command if you can; validate workflow
    syntax with actionlint when it is available.
-5. If the failure is unrelated to the dependency update (it was already broken on
-   the base branch), say so clearly - the pipeline will then close the PR instead
-   of churning.
+5. For a dependency update, report failures that were already present on the base
+   branch. For a PR opened to repair the base branch, use the PR's failing checks
+   to continue that repair.
 
 ## Rules
 

@@ -249,3 +249,11 @@ def test_model_cannot_change_merge_ancestry(project, monkeypatch):
     with pytest.raises(PiError, match="merge ancestry"):
         p.worker.monitor_pr(p.state.open_prs()[0])
     assert p.remote.commit_sha("deps/update") == p.head
+
+
+def test_behind_branch_is_updated_before_old_ci(project):
+    project.worker.gh.pr_view.return_value.update(mergeable="MERGEABLE", mergeStateStatus="BEHIND")
+    project.worker._current_checks.return_value = [{"bucket": "fail"}]
+    project.worker.monitor_pr(project.state.open_prs()[0])
+    assert project.remote.commit_sha("deps/update") != project.head
+    project.worker.fix_ci.assert_not_called()

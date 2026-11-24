@@ -9,6 +9,7 @@ double-opening PRs.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -177,6 +178,19 @@ class State:
             for column, definition in columns.items():
                 if column not in existing:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # Older doctor runs saved the PR URL but always keyed the row by zero.
+        with self.tx() as conn:
+            rows = conn.execute("SELECT repo, url FROM prs WHERE number=0 AND tier='D'").fetchall()
+            for row in rows:
+                prefix = f"https://github.com/{row['repo']}/pull/"
+                match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]{0,9})", row["url"] or "")
+                if match:
+                    conn.execute(
+                        "UPDATE OR IGNORE prs SET number=? WHERE repo=? AND number=0",
+                        (int(match[1]), row["repo"]),
+                    )
+                    # A real-number row, if present, already owns this PR's state.
+                    conn.execute("DELETE FROM prs WHERE repo=? AND number=0", (row["repo"],))
 
     @contextmanager
     def tx(self):
