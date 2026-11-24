@@ -162,3 +162,45 @@ def test_window_uses_minutes_without_the_hour_digit(tmp_path, now, window, remai
     result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert f"{remaining} min remaining" in result.stdout
+
+
+def test_key_descriptor_only_reaches_sadoc(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "sadoc"
+    fake.write_text(
+        '#!/bin/bash\n[[ "${SADOC_GITHUB_APP_KEY_FD:-}" == 3 && -e /proc/self/fd/3 ]]\n'
+    )
+    fake.chmod(0o755)
+    for tool in ("date", "mkdir", "python3", "awk", "tee", "dirname"):
+        helper = bin_dir / tool
+        helper.write_text(
+            "#!/bin/bash\n"
+            "if [[ -e /proc/self/fd/3 || -v SADOC_GITHUB_APP_KEY_FD ]]; then\n"
+            f'  echo {tool} >> "$SADOC_TEST_LEAKS"\n'
+            "fi\n"
+            f'exec /usr/bin/{tool} "$@"\n'
+        )
+        helper.chmod(0o755)
+    key = tmp_path / "dummy"
+    key.touch()
+    leaks = tmp_path / "leaks"
+    env = {
+        **os.environ,
+        "SADOC_HOME": str(tmp_path),
+        "SADOC_LOG_DIR": str(tmp_path / "logs"),
+        "SADOC_REPORT_DIR": str(tmp_path / "reports"),
+        "SADOC_TEST_LEAKS": str(leaks),
+        "SADOC_GITHUB_APP_KEY_FD": "3",
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["bash", "-c", 'exec "$1" 3<"$2"', "nightly-test", str(NIGHTLY), str(key)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    assert not leaks.exists(), leaks.read_text()
+    assert "report written to" in result.stdout

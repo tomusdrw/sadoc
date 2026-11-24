@@ -193,14 +193,17 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ```
 
 Use one `OpenFile=` entry so the PEM is descriptor 3. Do this for both the
-nightly and reminder commands if both use App mode. Keep one copy of the
+nightly and reminder commands if both use App mode. Use absolute paths to
+the service user's checkout and environment file in the system units.
+The system manager expands `%h` to its own home directory. Keep one copy of the
 key, in the root-only location. The Python command marks the descriptor
 close-on-exec, and pi receives neither the key nor the descriptor
 environment. Keep the user manager available for rootless Podman.
 
 Before switching the timers, run `bin/sadoc-app-smoke` as the regular user
 on the deployment machine. It uses local sudo to create a transient system
-service with a dummy key and isolated Podman storage. Add
+service that invokes the nightly runner with a dummy key and isolated
+Podman storage. Add
 `--key PATH --app-id ID --repo OWNER/REPO` to test app access and a dry-run
 push to one repository.
 

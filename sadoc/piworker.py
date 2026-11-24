@@ -222,6 +222,8 @@ class PiSession:
         env["SADOC_PLAYWRIGHT_RUNNER"] = str(REPO_ROOT / "extensions" / "playwright-runner.mjs")
         env["SADOC_SESSION_ID"] = self._session_id
         env["SADOC_DISCOVERY"] = "1" if self._discovery else "0"
+        if KEY_DIR.exists() or KEY_FD_ENV in os.environ:
+            env["SADOC_APP_SANDBOX"] = "1"
         env["SADOC_REAL_HOME"] = str(Path.home())
         env["SADOC_ALLOW_NET"] = "1" if self._allow_network else "0"
         # A persistent cache for the package managers, so a run does not

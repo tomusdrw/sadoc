@@ -23,11 +23,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const WORKSPACE = process.env.SADOC_WORKSPACE || process.cwd();
+const APP_SANDBOX = process.env.SADOC_APP_SANDBOX === "1";
 const ALLOW_NET = process.env.SADOC_ALLOW_NET === "1";
 // A persistent, writable directory for the package managers' caches. Without
 // it every run re-downloads the whole registry, which is slow and flaky.
@@ -121,6 +122,26 @@ function q(s: string): string {
 	return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
+// Resolve symlinks in every existing parent of a path, including for new files.
+function resolvedPath(path: string): string {
+	let ancestor = resolve(path);
+	while (true) {
+		try {
+			lstatSync(ancestor);
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			ancestor = dirname(ancestor);
+		}
+	}
+	return resolve(realpathSync(ancestor), relative(ancestor, resolve(path)));
+}
+
+function within(root: string, path: string): boolean {
+	const suffix = relative(resolvedPath(root), resolvedPath(path));
+	return !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(".." + sep);
+}
+
 /**
  * A mount whose source is outside the workspace and the cache.
  *
@@ -128,7 +149,7 @@ function q(s: string): string {
  * A source that is relative, or that the shell expands, is inside the sandbox
  * already; a source that names a host directory is not.
  */
-function mountSourceViolation(command: string | string[], roots: string[] = [WORKSPACE, TOOL_CACHE]): string | null {
+function mountSourceViolation(command: string | string[], roots: string[] = [WORKSPACE, TOOL_CACHE], cwd = WORKSPACE): string | null {
 	const sources: string[] = [];
 	if (Array.isArray(command)) {
 		// The shim already supplies expanded argv. Joining it loses spaces and
@@ -163,6 +184,15 @@ function mountSourceViolation(command: string | string[], roots: string[] = [WOR
 	}
 	for (const source of sources) {
 		if (!source) {
+			continue;
+		}
+		if (APP_SANDBOX && Array.isArray(command)) {
+			// The host helper receives expanded arguments and an explicit cwd.
+			// A plain volume name is not a bind mount.
+			if (/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(source)) continue;
+			if (!roots.some((root) => within(root, resolve(cwd, source)))) {
+				return "a directory outside the workspace";
+			}
 			continue;
 		}
 		// Expanded by the shell inside the sandbox: the scratch home, the
@@ -238,7 +268,7 @@ if __name__ == "__main__":
 `;
 
 /** The reason a runtime invocation is not allowed, or null if it is fine. */
-export function containerReason(argv: string | string[]): string | null {
+export function containerReason(argv: string | string[], cwd = WORKSPACE): string | null {
 	if (readOnly) return "Containers are disabled during read-only assessment";
 	const command = Array.isArray(argv) ? argv.join(" ") : argv;
 	for (const [pattern, label] of CONTAINER_FORBIDDEN) {
@@ -246,7 +276,7 @@ export function containerReason(argv: string | string[]): string | null {
 			return label;
 		}
 	}
-	return mountSourceViolation(argv);
+	return mountSourceViolation(argv, [WORKSPACE, TOOL_CACHE], cwd);
 }
 
 function containerEnvironment(): NodeJS.ProcessEnv {
@@ -286,7 +316,10 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 		return;
 	}
 	const argv = Array.isArray(request.argv) ? request.argv.map((arg) => String(arg)) : [];
-	const reason = containerReason(argv);
+	const cwd = typeof request.cwd === "string" ? request.cwd : WORKSPACE;
+	const reason = APP_SANDBOX && !within(WORKSPACE, cwd)
+		? "a working directory outside the workspace"
+		: containerReason(argv, cwd);
 	if (reason) {
 		conn.end(
 			JSON.stringify({
@@ -297,7 +330,6 @@ function serveContainerRequest(conn: Socket, chunk: Buffer): void {
 		);
 		return;
 	}
-	const cwd = typeof request.cwd === "string" ? request.cwd : WORKSPACE;
 	// Labels are assigned by the orchestrator's helper, never by the model.
 	// The orchestrator can remove these even if pi is forcibly terminated.
 	const verbIndex = argv[0] === "container" ? 1 : 0;
@@ -571,6 +603,16 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
+		if (APP_SANDBOX && ["read", "grep", "find", "ls", "write", "edit"].includes(event.toolName)) {
+			const target = resolve(WORKSPACE, String(event.input.path ?? "."));
+			try {
+				if (!within(WORKSPACE, target) || within(join(WORKSPACE, ".git"), target)) {
+					return { block: true, reason: "File tools are restricted to the checkout." };
+				}
+			} catch {
+				return { block: true, reason: "Could not validate the requested path." };
+			}
+		}
 		if (event.toolName === "write" || event.toolName === "edit") {
 			const path = String(event.input.path ?? "");
 			const abs = path.startsWith("/") ? path : `${WORKSPACE}/${path}`;

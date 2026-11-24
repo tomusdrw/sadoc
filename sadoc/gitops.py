@@ -42,6 +42,13 @@ def _split_patch(patch: str) -> tuple[str, list[str]]:
 class Git:
     path: Path
     github_token: Callable[[], str] | None = None
+    git_dir: Path | None = None
+
+    def _command(self, *args: str) -> list[str]:
+        base = ["git", "-C", str(self.path)]
+        if self.git_dir is not None:
+            base += ["--git-dir", str(self.git_dir), "--work-tree", str(self.path)]
+        return [*base, *args]
 
     def _network_env(self) -> dict[str, str] | None:
         if self.github_token is None:
@@ -69,7 +76,7 @@ class Git:
 
     def _run(self, *args, check: bool = True, timeout: int = 600, network: bool = False) -> str:
         proc = subprocess.run(
-            ["git", "-C", str(self.path), *args],
+            self._command(*args),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -84,8 +91,11 @@ class Git:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             shutil.rmtree(self.path)
+        args = ["git", "clone", "--depth", str(depth), "--branch", branch]
+        if self.git_dir is not None:
+            args += ["--separate-git-dir", str(self.git_dir)]
         proc = subprocess.run(
-            ["git", "clone", "--depth", str(depth), "--branch", branch, repo_url, str(self.path)],
+            [*args, repo_url, str(self.path)],
             capture_output=True,
             text=True,
             timeout=900,
@@ -105,16 +115,13 @@ class Git:
         refspec is given explicitly.
         """
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.path),
+            self._command(
                 "fetch",
                 "--depth",
                 "50",
                 "origin",
                 f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=300,
@@ -163,11 +170,11 @@ class Git:
         ref = f"origin/{branch}"
         if not self._run("merge-base", "HEAD", ref, check=False).strip():
             if self._run("rev-parse", "--is-shallow-repository").strip() == "true":
-                self._run("fetch", "--unshallow", "origin", timeout=900)
+                self._run("fetch", "--unshallow", "origin", timeout=900, network=True)
             # Never merge unrelated histories when shallow ancestry was insufficient.
             self._run("merge-base", "HEAD", ref)
         proc = subprocess.run(
-            ["git", "-C", str(self.path), "merge", "--no-commit", "--no-ff", ref],
+            self._command("merge", "--no-commit", "--no-ff", ref),
             capture_output=True,
             text=True,
             timeout=300,
@@ -214,7 +221,7 @@ class Git:
                 continue
             reverse_patch = header + "".join(bad)
             proc = subprocess.run(
-                ["git", "-C", str(self.path), "apply", "--reverse", "--unidiff-zero", "-"],
+                self._command("apply", "--reverse", "--unidiff-zero", "-"),
                 input=reverse_patch,
                 capture_output=True,
                 text=True,

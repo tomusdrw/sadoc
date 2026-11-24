@@ -10,10 +10,24 @@
 # enough time left for it to finish.
 set -uo pipefail
 
+# Keep the systemd descriptor in the runner and pass it only to Sadoc.
+# The CLI sets close-on-exec before starting its own subprocesses.
+if [ -n "${SADOC_GITHUB_APP_KEY_FD:-}" ] && [ "$SADOC_GITHUB_APP_KEY_FD" != 3 ]; then
+  echo "The nightly runner expects the GitHub App key on descriptor 3." >&2
+  exit 1
+fi
+without_app_key() (
+  if [ -n "${SADOC_GITHUB_APP_KEY_FD:-}" ]; then
+    exec 3<&-
+    unset SADOC_GITHUB_APP_KEY_FD LISTEN_FDS LISTEN_FDNAMES LISTEN_PID
+  fi
+  "$@"
+)
+
 # The install directory is derived from the script's own location, so the
 # nightly runner works wherever it was installed.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SADOC_HOME="${SADOC_HOME:-$(dirname "$SCRIPT_DIR")}"
+SCRIPT_DIR="$(cd "$(without_app_key dirname "${BASH_SOURCE[0]}")" && pwd)"
+SADOC_HOME="${SADOC_HOME:-$(without_app_key dirname "$SCRIPT_DIR")}"
 SADOC_BIN="$SADOC_HOME/bin/sadoc"
 CONFIG="${SADOC_CONFIG:-$HOME/.sadoc/config.toml}"
 LOG_DIR="${SADOC_LOG_DIR:-$HOME/.sadoc/logs}"
@@ -25,15 +39,15 @@ if [ ! -x "$SADOC_BIN" ]; then
   exit 1
 fi
 
-mkdir -p "$LOG_DIR" "$REPORT_DIR"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+without_app_key mkdir -p "$LOG_DIR" "$REPORT_DIR"
+STAMP="$(without_app_key date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/$STAMP.log"
 
-log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
+log() { printf '[%s] %s\n' "$(without_app_key date +%H:%M:%S)" "$*" | without_app_key tee -a "$LOG"; }
 
 run() {
   log ">>> $*"
-  "$@" 2>&1 | tee -a "$LOG"
+  "$@" 2>&1 | without_app_key tee -a "$LOG"
   local rc="${PIPESTATUS[0]}"
   log "<<< exit $rc"
   return "$rc"
@@ -46,7 +60,7 @@ run() {
 # goes, so continuing in place would be reading a file that changed under it.
 if [ "${SADOC_SELF_UPDATE:-1}" = "1" ] && [ "${SADOC_REEXEC:-0}" != "1" ]; then
   log "=== self-update ==="
-  "$SADOC_BIN" selfupdate 2>&1 | tee -a "$LOG"
+  "$SADOC_BIN" selfupdate 2>&1 | without_app_key tee -a "$LOG"
   UPDATE_RC="${PIPESTATUS[0]}"
   if [ "$UPDATE_RC" = "10" ]; then
     log "updated - starting again with the new version"
@@ -58,7 +72,7 @@ fi
 
 # Window helpers -----------------------------------------------------------
 window_from_config() {
-  python3 - "$CONFIG" <<'PY' 2>/dev/null || echo "01:00-07:00"
+  without_app_key python3 - "$CONFIG" <<'PY' 2>/dev/null || echo "01:00-07:00"
 import sys, tomllib
 try:
     with open(sys.argv[1], "rb") as fh:
@@ -73,8 +87,10 @@ WINDOW="$(window_from_config)"
 WINDOW_START="${WINDOW%%-*}"
 WINDOW_END="${WINDOW##*-}"
 
-minutes_now() { date +%H%M | awk '{print int(substr($0,1,2))*60 + int(substr($0,3,2))}'; }
-to_minutes() { echo "$1" | awk -F: '{print $1*60 + $2}'; }
+# shellcheck disable=SC2016
+minutes_now() { without_app_key date +%H%M | without_app_key awk '{print int(substr($0,1,2))*60 + int(substr($0,3,2))}'; }
+# shellcheck disable=SC2016
+to_minutes() { echo "$1" | without_app_key awk -F: '{print $1*60 + $2}'; }
 
 WSTART=$(to_minutes "$WINDOW_START")
 WEND=$(to_minutes "$WINDOW_END")
@@ -86,12 +102,12 @@ if [ "$WEND" -gt "$NOW" ]; then
 else
   DELTA_MIN=$((1440 - NOW + WEND))
 fi
-DEADLINE=$(( $(date +%s) + DELTA_MIN * 60 ))
+DEADLINE=$(( $(without_app_key date +%s) + DELTA_MIN * 60 ))
 TOTAL_MIN=$(( (WEND - WSTART + 1440) % 1440 ))
 [ "$TOTAL_MIN" -eq 0 ] && TOTAL_MIN=1440
 
 log "window $WINDOW - ${DELTA_MIN} min remaining of ${TOTAL_MIN}"
-log "deadline $(date -d "@$DEADLINE" +%H:%M:%S)"
+log "deadline $(without_app_key date -d "@$DEADLINE" +%H:%M:%S)"
 
 log "=== monitor ==="
 run "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" monitor --deadline "$DEADLINE" || true
@@ -112,7 +128,7 @@ log "=== report ==="
 REPORT="$REPORT_DIR/$STAMP.md"
 NOTE="Run at $STAMP."
 # The global options have to come before the subcommand.
-if "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" report --out "$REPORT" --note "$NOTE" 2>&1 | tee -a "$LOG"; then
+if "$SADOC_BIN" --config "$CONFIG" --db "$STATE_DB" report --out "$REPORT" --note "$NOTE" 2>&1 | without_app_key tee -a "$LOG"; then
   log "report written to $REPORT"
 else
   log "the report was not written"

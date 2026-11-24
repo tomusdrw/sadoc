@@ -457,11 +457,17 @@ class Worker:
     @contextmanager
     def prepare_clone(self, owner: str, repo: str, branch: str) -> Iterator[Git]:
         with workspaces.checkout(self.cfg.workdir, owner, repo) as dest:
-            git = Git(dest)
+            url = f"https://github.com/{owner}/{repo}.git"
             if self.cfg.github_app_id:
-                git.github_token = self.gh.app.token
-            git.clone(f"https://github.com/{owner}/{repo}.git", branch)
-            yield git
+                # App-authenticated Git never follows the checkout's .git pointer.
+                with TemporaryDirectory(prefix=".git-", dir=dest.parent) as private:
+                    git = Git(dest, github_token=self.gh.app.token, git_dir=Path(private).resolve())
+                    git.clone(url, branch)
+                    yield git
+            else:
+                git = Git(dest)
+                git.clone(url, branch)
+                yield git
 
     # ------------------------------------------------------------- verify
     def _verify_override(self, repo: str) -> str | None:

@@ -132,7 +132,20 @@ if repo:
         network=True,
     )
     print(f"OK: App authenticated to GitHub and passed a dry-run push to {repo}.", flush=True)
+(trial / "passed").touch()
 PY
+
+mkdir -p "$trial/bin"
+cat > "$trial/bin/sadoc" <<'SH'
+#!/bin/bash
+for arg in "$@"; do
+  if [[ "$arg" == monitor ]]; then
+    exec /usr/bin/python3 "$SADOC_SMOKE_DIR/check.py" "$SADOC_SMOKE_DIR" "$SADOC_SMOKE_KEY" "$SADOC_SMOKE_APP_ID" "$SADOC_SMOKE_REPO"
+  fi
+done
+exit 0
+SH
+chmod 700 "$trial/bin/sadoc"
 
 cat > "$trial/storage.conf" <<EOF_STORAGE
 [storage]
@@ -155,5 +168,20 @@ sudo systemd-run --wait --pipe --collect --unit="$unit" \
   --setenv="CONTAINERS_STORAGE_CONF=$trial/storage.conf" \
   --setenv="PATH=$PATH" \
   --setenv="PYTHONPATH=$checkout" \
+  --setenv="SADOC_SMOKE_DIR=$trial" \
+  --setenv="SADOC_SMOKE_KEY=$protected_key" \
+  --setenv="SADOC_SMOKE_APP_ID=$app_id" \
+  --setenv="SADOC_SMOKE_REPO=$repo" \
+  --setenv="SADOC_HOME=$trial" \
+  --setenv="SADOC_CONFIG=$trial/config.toml" \
+  --setenv="SADOC_LOG_DIR=$trial/logs" \
+  --setenv="SADOC_REPORT_DIR=$trial/reports" \
+  --setenv="SADOC_DB=$trial/state.db" \
+  --setenv="SADOC_SELF_UPDATE=0" \
   --working-directory="$checkout" \
-  /usr/bin/python3 "$trial/check.py" "$trial" "$protected_key" "$app_id" "$repo"
+  /bin/bash "$checkout/bin/sadoc-nightly"
+
+if [[ ! -e "$trial/passed" ]]; then
+  echo "The check inside the nightly runner did not complete successfully." >&2
+  exit 1
+fi

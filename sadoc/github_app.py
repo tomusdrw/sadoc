@@ -30,7 +30,7 @@ def _base64url(data: bytes) -> bytes:
     return base64.urlsafe_b64encode(data).rstrip(b"=")
 
 
-def _protected_key_fd() -> int | None:
+def protect_key_descriptor() -> int | None:
     value = os.environ.get(KEY_FD_ENV)
     if value is None:
         return None
@@ -60,7 +60,7 @@ def _protected_key_fd() -> int | None:
 
 class GitHubApp:
     def __init__(self, app_id: int, owner: str, *, require_protected_key: bool = False):
-        self._key_fd = _protected_key_fd()
+        self._key_fd = protect_key_descriptor()
         if require_protected_key and self._key_fd is None:
             raise GitHubAppError(
                 "GitHub App with containers requires a root-owned key opened by systemd"

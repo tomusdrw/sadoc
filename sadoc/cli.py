@@ -27,7 +27,7 @@ from sadoc import config as config_mod  # noqa: E402
 from sadoc import detect, ecosystems, pipeline, release_check, workspaces  # noqa: E402
 from sadoc.config import ModelSpec  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
-from sadoc.github_app import GitHubApp, GitHubAppError  # noqa: E402
+from sadoc.github_app import GitHubApp, GitHubAppError, protect_key_descriptor  # noqa: E402
 from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
 from sadoc.state import State  # noqa: E402
 
@@ -465,6 +465,12 @@ def cmd_status(args, cfg, gh, state) -> int:
 
 
 def main() -> int:
+    try:
+        protect_key_descriptor()
+    except GitHubAppError as exc:
+        _log(str(exc), level="error")
+        return 1
+
     parser = argparse.ArgumentParser(
         prog="sadoc",
         description="Sadoc - a nightly dependency update agent for your own GitHub repositories.",

@@ -122,6 +122,13 @@ await handlers.before_agent_start({messageType: "custom"});
 assert.deepEqual(activeTools, []);
 await handlers.before_agent_start({messageType: "user", prompt: "Repair the recipe"});
 assert.deepEqual(activeTools, ["bash", "read", "write", "edit"]);
+if (process.env.SADOC_APP_SANDBOX === "1") {
+    for (const toolName of ["read", "grep", "find", "ls", "write", "edit"]) {
+        assert.equal((await handlers.tool_call({toolName, input: {path: "../outside.txt"}})).block, true);
+    }
+    assert.equal(await handlers.tool_call({toolName: "write", input: {path: "new-directory/file.txt"}}), undefined);
+    assert.ok(containerReason(["run", "--rm", "-v", "../outside:/w", "alpine"]));
+}
 
 // Assessment tools must not mutate files, including through shell redirection,
 // Git metadata, or the helper that runs containers outside bubblewrap.

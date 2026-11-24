@@ -129,3 +129,37 @@ def test_protected_descriptor_stays_in_orchestrator(tmp_path, monkeypatch):
             close_fds=False,
             check=True,
         )
+
+
+def test_git_uses_separate_metadata_even_if_checkout_pointer_changes(tmp_path):
+    import subprocess
+
+    from sadoc.gitops import Git
+
+    source = tmp_path / "source"
+    subprocess.run(["git", "init", "-b", "main", str(source)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    git = Git(tmp_path / "checkout", git_dir=tmp_path / "private")
+    git.clone(source.as_uri(), "main")
+    original = git.commit_sha()
+    pointer = git.path / ".git"
+    assert pointer.is_file()
+    pointer.write_text("gitdir: /nonexistent\n")
+    assert git.commit_sha() == original
+    assert git.status() == ""
