@@ -55,13 +55,15 @@ class Git:
         }
         env.update(
             GIT_TERMINAL_PROMPT="0",
-            GIT_CONFIG_COUNT="3",
+            GIT_CONFIG_COUNT="4",
             GIT_CONFIG_KEY_0="credential.helper",
             GIT_CONFIG_VALUE_0="",
             GIT_CONFIG_KEY_1="http.followRedirects",
             GIT_CONFIG_VALUE_1="false",
             GIT_CONFIG_KEY_2="http.https://github.com/.extraHeader",
             GIT_CONFIG_VALUE_2=f"Authorization: Basic {credentials}",
+            GIT_CONFIG_KEY_3="core.hooksPath",
+            GIT_CONFIG_VALUE_3=os.devnull,
         )
         return env
 

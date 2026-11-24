@@ -73,6 +73,8 @@ def test_app_push_auth_only_reaches_the_git_network_command(monkeypatch, tmp_pat
     git.push("topic")
     env = run.call_args.kwargs["env"]
     assert env["GIT_CONFIG_KEY_2"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_KEY_3"] == "core.hooksPath"
+    assert env["GIT_CONFIG_VALUE_3"] == "/dev/null"
     authorization = env["GIT_CONFIG_VALUE_2"].removeprefix("Authorization: Basic ")
     assert base64.b64decode(authorization) == b"x-access-token:app-token"
 
