@@ -3,8 +3,13 @@ from sadoc import config
 
 def test_github_app_requires_app_id(tmp_path):
     settings = tmp_path / "config.toml"
-    settings.write_text('owner = "tomusdrw"\n[github]\nmode = "app"\napp_id = 5901719\n')
-    assert config.load(settings).github_app_id == 5901719
+    settings.write_text(
+        'owner = "tomusdrw"\n[github]\nmode = "app"\napp_id = 5901719\n'
+        "[sandbox]\nallow_containers = true\n"
+    )
+    cfg = config.load(settings)
+    assert cfg.github_app_id == 5901719
+    assert cfg.allow_containers
     assert config.Config().github_app_id is None
 
 
@@ -72,13 +77,53 @@ def test_app_push_auth_only_reaches_the_git_network_command(monkeypatch, tmp_pat
     assert base64.b64decode(authorization) == b"x-access-token:app-token"
 
 
-def test_app_mode_rejects_host_container_helper(tmp_path):
+def test_protected_key_is_required_for_app_with_containers(monkeypatch):
     import pytest
 
-    settings = tmp_path / "config.toml"
-    settings.write_text(
-        'owner = "tomusdrw"\n[github]\nmode = "app"\napp_id = 5901719\n'
-        "[sandbox]\nallow_containers = true\n"
+    from sadoc.github_app import GitHubApp, GitHubAppError
+
+    monkeypatch.delenv("SADOC_GITHUB_APP_KEY_FD", raising=False)
+    with pytest.raises(GitHubAppError, match="root-owned"):
+        GitHubApp(5901719, "tomusdrw", require_protected_key=True)
+
+
+def test_protected_descriptor_stays_in_orchestrator(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from sadoc.github_app import KEY_FD_ENV, GitHubApp
+
+    key = tmp_path / "key.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-out", str(key)],
+        capture_output=True,
+        check=True,
     )
-    with pytest.raises(config.ConfigError, match="allow_containers=false"):
-        config.load(settings)
+    key.chmod(0o600)
+    with key.open("rb") as source:
+        fd = source.fileno()
+        real_fstat = os.fstat
+
+        def fstat(candidate):
+            info = real_fstat(candidate)
+            if candidate != fd:
+                return info
+            return SimpleNamespace(st_uid=0, st_mode=info.st_mode, st_size=info.st_size)
+
+        os.set_inheritable(fd, True)
+        monkeypatch.setenv(KEY_FD_ENV, str(fd))
+        with monkeypatch.context() as patch:
+            patch.setattr("sadoc.github_app.os.fstat", fstat)
+            app = GitHubApp(5901719, "tomusdrw", require_protected_key=True)
+        assert not os.get_inheritable(fd)
+        assert source.tell() == 0
+        assert len(app._jwt().split(".")) == 3
+        assert len(app._jwt().split(".")) == 3
+        assert source.tell() == 0
+        subprocess.run(
+            [sys.executable, "-c", f"import os; assert not os.path.exists('/proc/self/fd/{fd}')"],
+            close_fds=False,
+            check=True,
+        )

@@ -550,9 +550,13 @@ def main() -> int:
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        app = GitHubApp(cfg.github_app_id, cfg.owner) if cfg.github_app_id else None
+        app = (
+            GitHubApp(cfg.github_app_id, cfg.owner, require_protected_key=cfg.allow_containers)
+            if cfg.github_app_id
+            else None
+        )
         gh = Gh(app=app) if app else Gh()
-    except GhError as exc:
+    except (GhError, GitHubAppError) as exc:
         _log(str(exc))
         return 1
     state = State(cfg.state_db)

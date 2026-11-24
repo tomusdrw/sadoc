@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
+import os
+import stat
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +18,8 @@ from threading import Lock
 
 KEY_DIR = Path.home() / ".sadoc" / "github-app"
 PRIVATE_KEY = KEY_DIR / "private-key.pem"
+KEY_FD_ENV = "SADOC_GITHUB_APP_KEY_FD"
+_MAX_KEY_BYTES = 64 * 1024
 
 
 class GitHubAppError(RuntimeError):
@@ -24,14 +30,73 @@ def _base64url(data: bytes) -> bytes:
     return base64.urlsafe_b64encode(data).rstrip(b"=")
 
 
+def _protected_key_fd() -> int | None:
+    value = os.environ.get(KEY_FD_ENV)
+    if value is None:
+        return None
+    try:
+        fd = int(value)
+        if fd < 3:
+            raise ValueError
+        info = os.fstat(fd)
+        mode = fcntl.fcntl(fd, fcntl.F_GETFL)
+        if (
+            info.st_uid != 0
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_mode & 0o077
+            or not 0 < info.st_size <= _MAX_KEY_BYTES
+            or mode & os.O_ACCMODE != os.O_RDONLY
+        ):
+            raise ValueError
+        # The systemd descriptor is inheritable on entry. No git, gh or pi
+        # process should inherit it from the Python orchestrator.
+        os.set_inheritable(fd, False)
+    except (OSError, ValueError, OverflowError) as exc:
+        raise GitHubAppError(
+            "expected a read-only descriptor for a root-owned GitHub App key"
+        ) from exc
+    return fd
+
+
 class GitHubApp:
-    def __init__(self, app_id: int, owner: str):
+    def __init__(self, app_id: int, owner: str, *, require_protected_key: bool = False):
+        self._key_fd = _protected_key_fd()
+        if require_protected_key and self._key_fd is None:
+            raise GitHubAppError(
+                "GitHub App with containers requires a root-owned key opened by systemd"
+            )
         self.app_id = app_id
         self.owner = owner
         self._installation: int | None = None
         self._token = ""
         self._expires = 0.0
         self._lock = Lock()
+
+    def _sign_with_protected_key(self, signing_input: bytes) -> bytes:
+        # Pass PEM on stdin. Only the unsigned JWT is placed in the anonymous
+        # file, so the root-owned descriptor never leaves this process.
+        assert self._key_fd is not None
+        key = os.pread(self._key_fd, _MAX_KEY_BYTES + 1, 0)
+        if not 0 < len(key) <= _MAX_KEY_BYTES:
+            raise GitHubAppError("invalid GitHub App key size")
+        with tempfile.TemporaryFile() as message:
+            message.write(signing_input)
+            message.flush()
+            return subprocess.run(
+                [
+                    "openssl",
+                    "dgst",
+                    "-sha256",
+                    "-sign",
+                    "/dev/stdin",
+                    f"/proc/self/fd/{message.fileno()}",
+                ],
+                input=key,
+                pass_fds=(message.fileno(),),
+                capture_output=True,
+                check=True,
+                timeout=15,
+            ).stdout
 
     def _jwt(self) -> str:
         now = int(time.time())
@@ -40,23 +105,25 @@ class GitHubApp:
             (_base64url(b'{"alg":"RS256","typ":"JWT"}'), _base64url(payload.encode()))
         )
         try:
-            if KEY_DIR.is_symlink() or PRIVATE_KEY.is_symlink():
-                raise GitHubAppError(
-                    "the GitHub App credential directory and key must not be symlinks"
-                )
-            if PRIVATE_KEY.stat().st_mode & 0o077:
-                raise GitHubAppError("the GitHub App key must be accessible only to its owner")
-            signature = subprocess.run(
-                ["openssl", "dgst", "-sha256", "-sign", str(PRIVATE_KEY)],
-                input=signing_input,
-                capture_output=True,
-                check=True,
-                timeout=15,
-            ).stdout
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise GitHubAppError(
-                f"could not sign with the GitHub App key at {PRIVATE_KEY}"
-            ) from exc
+            if self._key_fd is not None:
+                signature = self._sign_with_protected_key(signing_input)
+            else:
+                if KEY_DIR.is_symlink() or PRIVATE_KEY.is_symlink():
+                    raise GitHubAppError(
+                        "the GitHub App credential directory and key must not be symlinks"
+                    )
+                if PRIVATE_KEY.stat().st_mode & 0o077:
+                    raise GitHubAppError("the GitHub App key must be accessible only to its owner")
+                signature = subprocess.run(
+                    ["openssl", "dgst", "-sha256", "-sign", str(PRIVATE_KEY)],
+                    input=signing_input,
+                    capture_output=True,
+                    check=True,
+                    timeout=15,
+                ).stdout
+        except (OSError, subprocess.SubprocessError):
+            source = "the protected descriptor" if self._key_fd is not None else str(PRIVATE_KEY)
+            raise GitHubAppError(f"could not sign with the GitHub App key from {source}") from None
         return (signing_input + b"." + _base64url(signature)).decode("ascii")
 
     def _request(self, path: str, jwt: str, method: str = "GET") -> dict:

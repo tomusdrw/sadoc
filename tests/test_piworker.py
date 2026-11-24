@@ -554,3 +554,23 @@ def test_github_app_key_hidden_from_pi_shell(tmp_path, monkeypatch):
             result = session.bash(f"test ! -r {marker}", timeout=20)
             assert result["data"]["exitCode"] == 0
         assert marker.read_text() == "test key"
+
+
+def test_protected_key_environment_does_not_reach_container_worker(tmp_path, monkeypatch):
+    from sadoc.github_app import KEY_FD_ENV
+
+    monkeypatch.setenv(KEY_FD_ENV, "3")
+    monkeypatch.setenv("LISTEN_FDNAMES", "sadoc-github-key")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    session = PiSession(
+        tmp_path,
+        PiModel("test", "http://localhost:1", "test"),
+        tmp_path / "agent",
+        allow_containers=True,
+        scrub_env=False,
+    )
+    env = session._build_env()
+    assert env["SADOC_ALLOW_CONTAINERS"] == "1"
+    assert KEY_FD_ENV not in env
+    assert "LISTEN_FDNAMES" not in env
+    assert "GH_TOKEN" not in env

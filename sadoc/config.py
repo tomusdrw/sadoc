@@ -170,10 +170,6 @@ def load(path: str | Path | None = None) -> Config:
     # installed onto the machine. These live under [sandbox] with the rest of
     # the sandbox settings, but the top level is accepted too.
     cfg.allow_containers = bool(sandbox.get("allow_containers", raw.get("allow_containers", False)))
-    if cfg.github_app_id and cfg.allow_containers:
-        raise ConfigError(
-            "file-based GitHub App authentication requires sandbox.allow_containers=false"
-        )
     runtime = str(sandbox.get("container_runtime", raw.get("container_runtime", "podman")))
     if runtime.lower() == "docker":
         # The Docker socket is root-equivalent: reaching the daemon is reaching

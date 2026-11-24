@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import policy
 from .config import HOME as SADOC_HOME
-from .github_app import KEY_DIR
+from .github_app import KEY_DIR, KEY_FD_ENV
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SANDBOX_EXTENSION = REPO_ROOT / "extensions" / "sandbox.ts"
@@ -209,7 +209,11 @@ class PiSession:
     # ------------------------------------------------------------- setup
     def _build_env(self) -> dict:
         env = dict(os.environ)
-        if self._scrub_env or KEY_DIR.exists():
+        env.pop(KEY_FD_ENV, None)
+        if KEY_FD_ENV in os.environ:
+            for key in ("LISTEN_FDS", "LISTEN_FDNAMES", "LISTEN_PID"):
+                env.pop(key, None)
+        if self._scrub_env or KEY_DIR.exists() or KEY_FD_ENV in os.environ:
             for key in list(env):
                 if key in SECRET_PATTERNS or key.endswith("_API_KEY") or key in self._extra_secrets:
                     env.pop(key, None)

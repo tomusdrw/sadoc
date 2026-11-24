@@ -174,9 +174,35 @@ sign the authentication request.
 Before installing the key, stop Sadoc and any active pi sessions. Keep the
 single PEM copy in `~/.sadoc/github-app/private-key.pem` with mode `0600`.
 The directory is hidden from pi and its shell tools. File-based app mode
-requires `sandbox.allow_containers = false`: the host container helper has
-access to the host filesystem. Installations that use rootless containers
-can continue using `gh` with the app credential directory absent.
+requires `sandbox.allow_containers = false`.
+
+For an installation that uses rootless Podman, put the PEM in a root-only
+directory such as `/etc/sadoc`, with the file owned by root and mode `0600`.
+Let the system manager open it for Sadoc with `OpenFile=` (systemd 253 or
+later). The service itself and Podman run as the ordinary user. In the
+system service, add these settings to the existing Sadoc command and
+environment, substituting the service account, UID, and key path:
+
+```ini
+[Service]
+User=your-login
+OpenFile=/etc/sadoc/github-app.pem:sadoc-github-key:read-only
+Environment=SADOC_GITHUB_APP_KEY_FD=3
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+```
+
+Use one `OpenFile=` entry so the PEM is descriptor 3. Do this for both the
+nightly and reminder commands if both use App mode. Keep one copy of the
+key, in the root-only location. The Python command marks the descriptor
+close-on-exec, and pi receives neither the key nor the descriptor
+environment. Keep the user manager available for rootless Podman.
+
+Before switching the timers, run `bin/sadoc-app-smoke` as the regular user
+on the deployment machine. It uses local sudo to create a transient system
+service with a dummy key and isolated Podman storage. Add
+`--key PATH --app-id ID --repo OWNER/REPO` to test app access and a dry-run
+push to one repository.
 
 App mode leaves Dependabot security update settings alone. It can still
 propose changes to scheduled version updates according to
