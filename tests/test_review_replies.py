@@ -143,10 +143,45 @@ def test_failed_reaction_does_not_fall_back_to_a_comment_or_skip_other_comments(
     )
 
 
-def test_dry_run_does_not_acknowledge_comments(review):
+def test_dry_run_does_not_publish_review_changes(review):
+    def edit(prompt):
+        (review.git.path / "README.md").write_text("After review\n")
+        return SimpleNamespace(text="Corrected the documentation example.")
+
+    review.session.prompt.side_effect = edit
     review.worker.monitor_pr(review.row, dry_run=True)
+
+    review.git.push.assert_not_called()
 
     review.gh.pr_comment.assert_not_called()
     review.gh.resolve_review_thread.assert_not_called()
     assert not any("/reactions" in c.args[1] for c in review.gh.run.call_args_list)
     assert review.worker.state.known_comment_ids("o/r", 7) == set()
+
+
+@pytest.mark.parametrize("bucket", ["fail", "pass"])
+def test_fresh_feedback_takes_priority_over_ci_repair_and_auto_merge(review, bucket):
+    review.worker._current_checks = Mock(return_value=[{"bucket": bucket}])
+    review.worker.fix_ci = Mock()
+    review.worker.maybe_auto_merge = Mock(return_value="auto-merged")
+
+    review.worker.monitor_pr(review.row)
+
+    review.session.prompt.assert_called_once()
+    assert "Please check this." in review.session.prompt.call_args.args[0]
+    review.worker.fix_ci.assert_not_called()
+    review.worker.maybe_auto_merge.assert_not_called()
+
+
+def test_doctor_can_repair_ci_even_while_base_is_red(review):
+    review.row.update(tier="D", branch="fix/r/old")
+    review.gh.pr_review_comments.return_value = []
+    review.gh.pr_issue_comments.return_value = []
+    review.worker._current_checks = Mock(return_value=[{"bucket": "fail"}])
+    review.worker.base_branch_is_also_failing = Mock(return_value=(True, "test"))
+    review.worker.fix_ci = Mock()
+    review.worker.watch_ci = Mock(return_value="pass")
+
+    assert review.worker.monitor_pr(review.row) == "ci was fail, now pass"
+    review.worker.fix_ci.assert_called_once()
+    assert review.worker.fix_ci.call_args.args[5] == []

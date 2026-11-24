@@ -1,8 +1,8 @@
-You are responding to code review feedback on a pull request that updates dependencies.
+You are responding to code review feedback on a pull request.
 
 ## Context
 
-This pull request updates dependencies:
+Dependency updates associated with this pull request, if any:
 
 {{UPDATES}}
 
@@ -17,7 +17,7 @@ This pull request updates dependencies:
    - **a question** -> answer it in your summary (no code change needed);
    - **a disagreement or a "nit"** -> if the reviewer is right, make the change; if
      you disagree, explain why in your summary rather than silently ignoring it;
-   - **something out of scope for a dependency bump** -> say so in the summary and
+   - **something out of scope for the pull request** -> say so in the summary and
      do not make that change.
 2. A comment may be attached to a file and line that no longer exists because the
    dependency update rewrote it. In that case, find the equivalent code in the
