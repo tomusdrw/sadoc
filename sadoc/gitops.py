@@ -6,10 +6,14 @@ it can only edit files inside the clone.
 
 from __future__ import annotations
 
+import base64
+import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 class GitError(RuntimeError):
@@ -38,13 +42,46 @@ def _split_patch(patch: str) -> tuple[str, list[str]]:
 @dataclass
 class Git:
     path: Path
+    github_token: Callable[[], str] | None = None
+    git_dir: Path | None = None
 
-    def _run(self, *args, check: bool = True, timeout: int = 600) -> str:
+    def _command(self, *args: str) -> list[str]:
+        base = ["git", "-C", str(self.path)]
+        if self.git_dir is not None:
+            base += ["--git-dir", str(self.git_dir), "--work-tree", str(self.path)]
+        return [*base, *args]
+
+    def _network_env(self) -> dict[str, str] | None:
+        if self.github_token is None:
+            return None
+        credentials = base64.b64encode(f"x-access-token:{self.github_token()}".encode()).decode()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("GIT_TRACE", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+            and key not in ("GIT_CONFIG_PARAMETERS", "GIT_CURL_VERBOSE")
+        }
+        env.update(
+            GIT_TERMINAL_PROMPT="0",
+            GIT_CONFIG_COUNT="4",
+            GIT_CONFIG_KEY_0="credential.helper",
+            GIT_CONFIG_VALUE_0="",
+            GIT_CONFIG_KEY_1="http.followRedirects",
+            GIT_CONFIG_VALUE_1="false",
+            GIT_CONFIG_KEY_2="http.https://github.com/.extraHeader",
+            GIT_CONFIG_VALUE_2=f"Authorization: Basic {credentials}",
+            GIT_CONFIG_KEY_3="core.hooksPath",
+            GIT_CONFIG_VALUE_3=os.devnull,
+        )
+        return env
+
+    def _run(self, *args, check: bool = True, timeout: int = 600, network: bool = False) -> str:
         proc = subprocess.run(
-            ["git", "-C", str(self.path), *args],
+            self._command(*args),
             capture_output=True,
             text=True,
             timeout=timeout,
+            **({"env": self._network_env()} if network and self.github_token else {}),
         )
         if check and proc.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:1500]}")
@@ -55,17 +92,32 @@ class Git:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             shutil.rmtree(self.path)
+        if self.git_dir is None:
+            self._clone_to(self.path, repo_url, branch, depth)
+            return
+
+        # Clone and copy trusted metadata privately before opening the file
+        # tree to the container worker. The checkout gets its own Git metadata.
+        with TemporaryDirectory(prefix="sadoc-clone-", dir="/tmp") as staging:
+            checkout = Path(staging) / "checkout"
+            self._clone_to(checkout, repo_url, branch, depth)
+            shutil.copytree(checkout / ".git", self.git_dir, dirs_exist_ok=True)
+            shutil.copytree(checkout, self.path, symlinks=True)
+
+    def _clone_to(self, destination: Path, repo_url: str, branch: str, depth: int) -> None:
+        args = ["git", "clone", "--depth", str(depth), "--branch", branch]
         proc = subprocess.run(
-            ["git", "clone", "--depth", str(depth), "--branch", branch, repo_url, str(self.path)],
+            [*args, repo_url, str(destination)],
             capture_output=True,
             text=True,
             timeout=900,
+            **({"env": self._network_env()} if self.github_token else {}),
         )
         if proc.returncode != 0:
             raise GitError(f"clone failed: {proc.stderr.strip()[:1500]}")
 
     def fetch(self) -> None:
-        self._run("fetch", "--all", "--prune", timeout=300)
+        self._run("fetch", "--all", "--prune", timeout=300, network=True)
 
     def fetch_branch(self, branch: str) -> bool:
         """Fetch a single remote branch into refs/remotes/origin/<branch>.
@@ -75,19 +127,17 @@ class Git:
         refspec is given explicitly.
         """
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.path),
+            self._command(
                 "fetch",
                 "--depth",
                 "50",
                 "origin",
                 f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=300,
+            **({"env": self._network_env()} if self.github_token else {}),
         )
         if proc.returncode != 0:
             return False
@@ -114,6 +164,7 @@ class Git:
             f"refs/heads/{branch}",
             check=False,
             timeout=120,
+            network=True,
         )
         return bool(out.strip())
 
@@ -131,11 +182,11 @@ class Git:
         ref = f"origin/{branch}"
         if not self._run("merge-base", "HEAD", ref, check=False).strip():
             if self._run("rev-parse", "--is-shallow-repository").strip() == "true":
-                self._run("fetch", "--unshallow", "origin", timeout=900)
+                self._run("fetch", "--unshallow", "origin", timeout=900, network=True)
             # Never merge unrelated histories when shallow ancestry was insufficient.
             self._run("merge-base", "HEAD", ref)
         proc = subprocess.run(
-            ["git", "-C", str(self.path), "merge", "--no-commit", "--no-ff", ref],
+            self._command("merge", "--no-commit", "--no-ff", ref),
             capture_output=True,
             text=True,
             timeout=300,
@@ -182,7 +233,7 @@ class Git:
                 continue
             reverse_patch = header + "".join(bad)
             proc = subprocess.run(
-                ["git", "-C", str(self.path), "apply", "--reverse", "--unidiff-zero", "-"],
+                self._command("apply", "--reverse", "--unidiff-zero", "-"),
                 input=reverse_patch,
                 capture_output=True,
                 text=True,
@@ -243,7 +294,7 @@ class Git:
         args = ["push", "--set-upstream", "origin", branch]
         if force:
             args.insert(1, "--force-with-lease")
-        return self._run(*args, timeout=600)
+        return self._run(*args, timeout=600, network=True)
 
     def commit_sha(self, ref: str = "HEAD") -> str:
         return self._run("rev-parse", ref).strip()

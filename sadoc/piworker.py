@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import queue
 import signal
 import subprocess
@@ -28,6 +29,7 @@ from pathlib import Path
 
 from . import policy
 from .config import HOME as SADOC_HOME
+from .github_app import KEY_DIR, KEY_FD_ENV
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SANDBOX_EXTENSION = REPO_ROOT / "extensions" / "sandbox.ts"
@@ -51,6 +53,35 @@ SECRET_PATTERNS = (
     "SMTP_APP_PASSWORD",
     "SMTP_PASSWORD",
 )
+
+
+def container_runtime_command(runtime: str) -> list[str]:
+    worker = os.environ.get("SADOC_PODMAN_USER")
+    if not worker:
+        return [runtime]
+    try:
+        account = pwd.getpwnam(worker)
+    except KeyError:
+        raise PiError(f"unknown Podman worker account: {worker}") from None
+    if runtime != "podman" or account.pw_uid in (0, os.getuid(), os.geteuid()):
+        raise PiError("the isolated runtime must be Podman under a separate unprivileged account")
+    runtime_dir = f"/run/user/{account.pw_uid}"
+    return [
+        "/usr/bin/sudo",
+        "-n",
+        "-u",
+        f"#{account.pw_uid}",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "PATH=/usr/bin:/bin",
+        f"HOME={account.pw_dir}",
+        f"USER={worker}",
+        f"LOGNAME={worker}",
+        f"XDG_RUNTIME_DIR={runtime_dir}",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime_dir}/bus",
+        "/usr/bin/podman",
+    ]
 
 
 class PiError(RuntimeError):
@@ -208,7 +239,11 @@ class PiSession:
     # ------------------------------------------------------------- setup
     def _build_env(self) -> dict:
         env = dict(os.environ)
-        if self._scrub_env:
+        env.pop(KEY_FD_ENV, None)
+        if KEY_FD_ENV in os.environ:
+            for key in ("LISTEN_FDS", "LISTEN_FDNAMES", "LISTEN_PID"):
+                env.pop(key, None)
+        if self._scrub_env or KEY_DIR.exists() or KEY_FD_ENV in os.environ:
             for key in list(env):
                 if key in SECRET_PATTERNS or key.endswith("_API_KEY") or key in self._extra_secrets:
                     env.pop(key, None)
@@ -217,6 +252,8 @@ class PiSession:
         env["SADOC_PLAYWRIGHT_RUNNER"] = str(REPO_ROOT / "extensions" / "playwright-runner.mjs")
         env["SADOC_SESSION_ID"] = self._session_id
         env["SADOC_DISCOVERY"] = "1" if self._discovery else "0"
+        if KEY_DIR.exists() or KEY_FD_ENV in os.environ:
+            env["SADOC_APP_SANDBOX"] = "1"
         env["SADOC_REAL_HOME"] = str(Path.home())
         env["SADOC_ALLOW_NET"] = "1" if self._allow_network else "0"
         # A persistent cache for the package managers, so a run does not
@@ -229,8 +266,13 @@ class PiSession:
         # The container rules are owned by sadoc.policy and handed over here, so
         # there is one list of them rather than one in Python and one in the
         # extension.
+        env.pop("SADOC_PODMAN_USER", None)
+        env.pop("SADOC_CONTAINER_COMMAND", None)
         if self._allow_containers:
             env["SADOC_CONTAINER_POLICY"] = policy.policy_json()
+            env["SADOC_CONTAINER_COMMAND"] = json.dumps(
+                container_runtime_command(self._container_runtime)
+            )
         else:
             env.pop("SADOC_CONTAINER_POLICY", None)
         return env
@@ -272,6 +314,8 @@ class PiSession:
         )
 
     def start(self) -> None:
+        if KEY_DIR.exists() and self._allow_containers:
+            raise PiError("keep the GitHub App key out of reach of the host container helper")
         self._write_models_json()
         cmd = [
             "pi",
@@ -287,13 +331,38 @@ class PiSession:
             self.model.model,
             *self._extra_args,
         ]
+        env = self._build_env()
+        if KEY_DIR.exists():
+            # Protect startup context and built-in file tools as well as bash.
+            cmd = [
+                "bwrap",
+                "--bind",
+                "/",
+                "/",
+                "--dev-bind",
+                "/dev",
+                "/dev",
+                "--unshare-pid",
+                "--proc",
+                "/proc",
+                "--die-with-parent",
+                "--tmpfs",
+                str(KEY_DIR.resolve()),
+                "--tmpfs",
+                "/run/user",
+                "--unsetenv",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "--",
+                *cmd,
+                "--no-mcp",
+            ]
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=self.cwd,
-            env=self._build_env(),
+            env=env,
             text=True,
             bufsize=1,
             start_new_session=True,
@@ -599,11 +668,14 @@ class PiSession:
             XDG_RUNTIME_DIR=str(containers / "run"),
             TMPDIR="/tmp",
         )
-        runtime = self._container_runtime
+        runtime = container_runtime_command(self._container_runtime)
+        # Cleanup only addresses containers by label or ID. The worker does
+        # not need access to the caller's checkout or current directory.
+        cwd = "/tmp" if len(runtime) > 1 else None
         try:
             found = subprocess.run(
                 [
-                    runtime,
+                    *runtime,
                     "ps",
                     "--all",
                     "--quiet",
@@ -611,6 +683,7 @@ class PiSession:
                     f"label=io.sadoc.session={self._session_id}",
                 ],
                 env=env,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -620,8 +693,9 @@ class PiSession:
             ids = found.stdout.split()
             if ids:
                 removed = subprocess.run(
-                    [runtime, "rm", "--force", "--volumes", *ids],
+                    [*runtime, "rm", "--force", "--volumes", *ids],
                     env=env,
+                    cwd=cwd,
                     capture_output=True,
                     text=True,
                     timeout=20,

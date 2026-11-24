@@ -5,8 +5,13 @@
 # the tool can be run straight from a checkout without installing anything.
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HERE")"
+SOURCE="${BASH_SOURCE[0]}"
+if [[ "$SOURCE" == */* ]]; then
+  HERE="$(cd -- "${SOURCE%/*}" && pwd)"
+else
+  HERE="$PWD"
+fi
+ROOT="${HERE%/*}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 exec "${PYTHON:-python3}" -m sadoc.cli "$@"

@@ -153,6 +153,74 @@ Nothing is written outside it except the systemd units in
 [12:00:00]   IN  you/some-repo  (pushed 2026-10-05)
 ```
 
+### GitHub authentication
+
+By default, Sadoc uses the existing `gh` login and Git credentials.
+To run as an installed GitHub App, set the top-level `owner` to the login
+where the app is installed, then add:
+
+```toml
+[github]
+mode = "app"
+app_id = 123456
+```
+
+The app needs repository write access to Contents and Pull requests, and read
+access to Actions, Checks, and Commit statuses. Grant Workflows write access
+if Sadoc updates workflow files. Sadoc discovers repositories from the app
+installation and refreshes its token automatically. App mode uses OpenSSL to
+sign the authentication request.
+
+Before installing the key, stop Sadoc and any active pi sessions. Keep the
+single PEM copy in `~/.sadoc/github-app/private-key.pem` with mode `0600`.
+The directory is hidden from pi and its shell tools. File-based app mode
+requires `sandbox.allow_containers = false`.
+
+For an installation that uses rootless Podman, put the PEM in a root-only
+directory such as `/etc/sadoc`, with the file owned by root and mode `0600`.
+Let the system manager open it for Sadoc with `OpenFile=` (systemd 253 or
+later). Run the service as the ordinary user and the rootless Podman commands as
+a separate unprivileged account. Give the Podman account a private home,
+subordinate UIDs and GIDs, and a running user manager. In the system service,
+add these settings to the existing Sadoc command and environment:
+
+```ini
+[Service]
+User=your-login
+OpenFile=/etc/sadoc/github-app.pem:sadoc-github-key:read-only
+Environment=SADOC_GITHUB_APP_KEY_FD=3
+Environment=SADOC_PODMAN_USER=sadoc-podman
+Environment=SADOC_CACHE_DIR=/var/lib/sadoc-shared/cache
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+```
+
+Use one `OpenFile=` entry so the PEM is descriptor 3. Do this for both the
+nightly and reminder commands if both use App mode. Use absolute paths to
+the service user's checkout and environment file in the system units.
+The system manager expands `%h` to its own home directory. Keep one copy of the
+key, in the root-only location. The Python command marks the descriptor
+close-on-exec, and pi receives neither the key nor the descriptor
+environment. Sadoc uses non-interactive sudo to invoke Podman as
+`SADOC_PODMAN_USER` with an empty environment and explicit home and
+runtime settings. Limit sudo authorization to that account. Keep the
+checkout parent traversable by the account and the cache shared using
+POSIX ACLs. Sadoc grants the worker access to each disposable checkout
+and keeps the authenticated Git metadata in a private directory.
+
+Before switching the timers, run `bin/sadoc-app-smoke` as the regular user
+on the deployment machine. It uses local sudo to create a transient system
+service that invokes the nightly runner with a dummy key and isolated
+Podman storage. Add
+`--key PATH --app-id ID --repo OWNER/REPO` to test app access and a dry-run
+push to one repository. Add `--podman-user USER` to exercise the
+separate account and verify that it can mount the disposable checkout.
+
+App mode leaves Dependabot security update settings alone. It can still
+propose changes to scheduled version updates according to
+`disable_dependabot`. Use `sadoc --dry-run run --repo NAME` to try a repo
+without publishing changes.
+
 ### Secrets
 
 Never put credentials in `config.toml`. Use `secrets.env`:

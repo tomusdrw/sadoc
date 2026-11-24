@@ -76,10 +76,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Shellcheck
-        run: shellcheck -x bin/sadoc bin/sadoc-nightly
+        run: shellcheck -x bin/sadoc bin/sadoc-nightly bin/sadoc-app-smoke
 
       - name: Bash syntax check
-        run: bash -n bin/sadoc && bash -n bin/sadoc-nightly
+        run: bash -n bin/sadoc && bash -n bin/sadoc-nightly && bash -n bin/sadoc-app-smoke
 
   smoke:
     name: cli smoke test

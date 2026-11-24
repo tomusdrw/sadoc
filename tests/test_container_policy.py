@@ -179,6 +179,7 @@ def test_the_extension_enforces_the_same_rules(tmp_path):
             "SADOC_CONTAINER_POLICY": policy.policy_json(),
             "SADOC_WORKSPACE": str(tmp_path),
             "SADOC_DISCOVERY": "1",
+            "SADOC_APP_SANDBOX": "1",
             "SADOC_ALLOW_CONTAINERS": "0",
             "SADOC_CACHE_DIR": str(tmp_path / "cache"),
         },

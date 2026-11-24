@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Verify GitHub App key isolation and rootless Podman in a transient system unit.
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: bin/sadoc-app-smoke [--key PEM --app-id ID --repo OWNER/REPO] [--podman-user USER]
+
+Run from your regular account. The script prompts for sudo locally.
+Without a key it generates a temporary RSA key and tests isolation and Podman.
+With a key it additionally checks GitHub App access and a dry-run Git push.
+The nightly timers and configuration are not used by the test.
+HELP
+}
+
+key=
+app_id=
+repo=
+worker=
+while (($#)); do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --key|--app-id|--repo|--podman-user)
+      if (($# < 2)); then usage >&2; exit 2; fi
+      case "$1" in
+        --key) key="$2" ;;
+        --app-id) app_id="$2" ;;
+        --repo) repo="$2" ;;
+        --podman-user) worker="$2" ;;
+      esac
+      shift 2
+      ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+if [[ -n "$key$app_id$repo" ]]; then
+  if [[ -z "$key" || ! "$app_id" =~ ^[1-9][0-9]*$ ||
+        ! "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ ]]; then
+    usage >&2
+    exit 2
+  fi
+fi
+if ((EUID == 0)); then
+  echo "Run this script as your regular user, without a sudo prefix." >&2
+  exit 2
+fi
+
+checkout="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+uid="$(id -u)"
+username="$(id -un)"
+runtime="/run/user/$uid"
+unit="sadoc-app-smoke-$$"
+if [[ ! -S "$runtime/bus" ]]; then
+  echo "The user systemd bus is unavailable at $runtime/bus." >&2
+  exit 1
+fi
+
+sudo -v
+if [[ -n "$key" ]]; then
+  key="$(sudo realpath -e -- "$key")"
+  if ! sudo test -f "$key"; then
+    echo "Expected a regular PEM file." >&2
+    exit 2
+  fi
+fi
+trial="$(mktemp -d)"
+if [[ -n "$worker" ]]; then
+  if [[ ! "$worker" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+    rmdir -- "$trial"
+    exit 2
+  fi
+  setfacl -m "u:$worker:--x" -- "$trial"
+fi
+root_trial=
+started=false
+cleanup() {
+  local result="$?"
+  trap - EXIT
+  if "$started"; then
+    sudo systemctl stop "$unit.service" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$root_trial" ]]; then
+    sudo rm -f -- "$root_trial/key.pem" || result=1
+    sudo rmdir -- "$root_trial" || result=1
+  fi
+  # The test image can have files owned by subordinate UIDs.
+  sudo rm -rf --one-file-system -- "$trial" || result=1
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+root_trial="$(sudo mktemp -d /run/sadoc-app-smoke.XXXXXXXX)"
+protected_key="$root_trial/key.pem"
+if [[ -n "$key" ]]; then
+  sudo install -m 0600 -o root -g root -- "$key" "$protected_key"
+else
+  sudo sh -c 'umask 077; exec /usr/bin/openssl genpkey -algorithm RSA -out "$1"' sh "$protected_key"
+fi
+
+cat > "$trial/check.py" <<'PY'
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+from sadoc.gh import Gh
+from sadoc.github_app import GitHubApp
+from sadoc.gitops import Git
+from sadoc.piworker import PiModel, PiSession
+
+trial, key = map(Path, sys.argv[1:3])
+app_id, repo = sys.argv[3:]
+owner, _, name = repo.partition("/")
+app = GitHubApp(int(app_id or 1), owner, require_protected_key=True)
+if os.geteuid() == 0 or os.access(key, os.R_OK):
+    raise SystemExit("The service can read the key by path or is running as root.")
+if len(app._jwt().split(".")) != 3:
+    raise SystemExit("JWT signing did not return a signed token.")
+print("OK: the unprivileged orchestrator signed using its protected descriptor.", flush=True)
+
+work = trial / "work"
+work.mkdir()
+if worker := os.environ.get("SADOC_PODMAN_USER"):
+    subprocess.run(["setfacl", "-m", f"u:{worker}:r-x", "--", str(work)], check=True)
+    (work / "marker").write_text("sadoc smoke")
+    private = trial / "private"
+    private.mkdir(mode=0o700)
+    marker = private / "marker"
+    marker.write_text("orchestrator only")
+    subprocess.run(
+        ["/usr/bin/sudo", "-n", "-u", worker, "--", "/usr/bin/env", "-i",
+         "/usr/bin/test", "!", "-r", str(marker)],
+        check=True,
+    )
+    print(f"OK: Podman account {worker} cannot read the private orchestrator directory.", flush=True)
+session = PiSession(
+    work, PiModel("test", "http://localhost:1", "test"), trial / "agent",
+    allow_containers=True,
+)
+with session:
+    command = 'podman run --rm --network none --user 1234 '
+    if worker:
+        command += f'-v {shlex.quote(str(work) + ":/work:ro")} '
+        command += "docker.io/library/alpine:3.22 sh -c 'test -r /work/marker && id -u'"
+    else:
+        command += "docker.io/library/alpine:3.22 id -u"
+    check = session.bash(
+        f'test ! -r {shlex.quote(str(key))} && '
+        'test -z "${SADOC_GITHUB_APP_KEY_FD:-}" && '
+        + command,
+        timeout=240,
+    )["data"]
+    if check["exitCode"] != 0 or check["output"].strip().splitlines()[-1:] != ["1234"]:
+        raise SystemExit(f"Podman isolation check failed:\n{check['output']}")
+print("OK: pi kept the key private and ran a rootless container as UID 1234.", flush=True)
+
+if repo:
+    gh = Gh(app=app)
+    info = gh.repo_info(owner, name)
+    git = Git(trial / "checkout", github_token=app.token)
+    git.clone(f"https://github.com/{repo}.git", info["default_branch"], depth=1)
+    git._run(
+        "push", "--dry-run", "origin", f"HEAD:refs/heads/sadoc/app-smoke-{os.getpid()}",
+        network=True,
+    )
+    print(f"OK: App authenticated to GitHub and passed a dry-run push to {repo}.", flush=True)
+(trial / "passed").touch()
+PY
+
+mkdir -p "$trial/bin"
+cat > "$trial/bin/sadoc" <<'SH'
+#!/bin/bash
+for arg in "$@"; do
+  if [[ "$arg" == monitor ]]; then
+    exec /usr/bin/python3 "$SADOC_SMOKE_DIR/check.py" "$SADOC_SMOKE_DIR" "$SADOC_SMOKE_KEY" "$SADOC_SMOKE_APP_ID" "$SADOC_SMOKE_REPO"
+  fi
+done
+exit 0
+SH
+chmod 700 "$trial/bin/sadoc"
+
+cat > "$trial/storage.conf" <<EOF_STORAGE
+[storage]
+driver = "overlay"
+runroot = "$trial/toolcache/containers/run/storage"
+graphroot = "$trial/toolcache/containers/data/storage"
+rootless_storage_path = "$trial/toolcache/containers/data/storage"
+EOF_STORAGE
+
+started=true
+sudo systemd-run --wait --pipe --collect --unit="$unit" \
+  --property="Type=exec" \
+  --property="User=$username" \
+  --property="Delegate=yes" \
+  --property="OpenFile=$protected_key:sadoc-github-key:read-only" \
+  --setenv="XDG_RUNTIME_DIR=$runtime" \
+  --setenv="DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+  --setenv="SADOC_PODMAN_USER=$worker" \
+  --setenv="SADOC_GITHUB_APP_KEY_FD=3" \
+  --setenv="SADOC_CACHE_DIR=$trial/toolcache" \
+  --setenv="CONTAINERS_STORAGE_CONF=$trial/storage.conf" \
+  --setenv="PATH=$PATH" \
+  --setenv="PYTHONPATH=$checkout" \
+  --setenv="SADOC_SMOKE_DIR=$trial" \
+  --setenv="SADOC_SMOKE_KEY=$protected_key" \
+  --setenv="SADOC_SMOKE_APP_ID=$app_id" \
+  --setenv="SADOC_SMOKE_REPO=$repo" \
+  --setenv="SADOC_HOME=$trial" \
+  --setenv="SADOC_CONFIG=$trial/config.toml" \
+  --setenv="SADOC_LOG_DIR=$trial/logs" \
+  --setenv="SADOC_REPORT_DIR=$trial/reports" \
+  --setenv="SADOC_DB=$trial/state.db" \
+  --setenv="SADOC_SELF_UPDATE=0" \
+  --working-directory="$checkout" \
+  /bin/bash "$checkout/bin/sadoc-nightly"
+
+if [[ ! -e "$trial/passed" ]]; then
+  echo "The check inside the nightly runner did not complete successfully." >&2
+  exit 1
+fi

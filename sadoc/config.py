@@ -33,6 +33,7 @@ class ModelSpec:
 @dataclass
 class Config:
     owner: str = ""
+    github_app_id: int | None = None
     owners: list[str] = field(default_factory=list)
     state_db: Path = HOME / "state.db"
     workdir: Path = HOME / "work"
@@ -124,6 +125,18 @@ def load(path: str | Path | None = None) -> Config:
 
     cfg.owner = raw.get("owner", cfg.owner)
     cfg.owners = list(raw.get("owners", []) or [])
+    github = raw.get("github", {})
+    mode = github.get("mode", "gh")
+    if mode not in ("gh", "app"):
+        raise ConfigError("github.mode must be 'gh' or 'app'")
+    if mode == "app":
+        app_id = github.get("app_id")
+        if type(app_id) is not int or app_id <= 0:
+            raise ConfigError("github.app_id must be a positive integer")
+        if not cfg.owner or any(owner.lower() != cfg.owner.lower() for owner in cfg.owners):
+            raise ConfigError("GitHub App mode requires one owner")
+        cfg.github_app_id = app_id
+
     cfg.dry_run = bool(raw.get("dry_run", os.environ.get("SADOC_DRY_RUN") == "1"))
 
     for key in ("state_db", "workdir", "agent_dir", "report_dir"):

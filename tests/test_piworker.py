@@ -529,3 +529,92 @@ def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):
     diagnostic = json.loads(session.diagnostics())["prompt"]
     assert diagnostic["duration_s"] == 25
     assert "still working" in diagnostic["text_tail"]
+
+
+def test_github_app_key_hidden_from_pi_shell(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    if not shutil.which("pi") or not shutil.which("bwrap"):
+        pytest.skip("pi and bubblewrap are needed for the RPC sandbox smoke test")
+    from tempfile import TemporaryDirectory
+
+    # A key under /tmp would also be hidden by the inner shell sandbox.
+    with TemporaryDirectory(dir=Path.home()) as location:
+        key_dir = Path(location)
+        marker = key_dir / "private-key.pem"
+        marker.write_text("test key")
+        monkeypatch.setattr("sadoc.piworker.KEY_DIR", key_dir)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        session = PiSession(
+            workspace, PiModel("test", "http://localhost:1", "test"), tmp_path / "agent"
+        )
+        with session:
+            result = session.bash(f"test ! -r {marker}", timeout=20)
+            assert result["data"]["exitCode"] == 0
+        assert marker.read_text() == "test key"
+
+
+def test_protected_key_environment_does_not_reach_container_worker(tmp_path, monkeypatch):
+    from sadoc.github_app import KEY_FD_ENV
+
+    monkeypatch.setenv(KEY_FD_ENV, "3")
+    monkeypatch.setenv("LISTEN_FDNAMES", "sadoc-github-key")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    session = PiSession(
+        tmp_path,
+        PiModel("test", "http://localhost:1", "test"),
+        tmp_path / "agent",
+        allow_containers=True,
+        scrub_env=False,
+    )
+    env = session._build_env()
+    assert env["SADOC_ALLOW_CONTAINERS"] == "1"
+    assert KEY_FD_ENV not in env
+    assert "LISTEN_FDNAMES" not in env
+    assert "GH_TOKEN" not in env
+
+
+def test_isolated_podman_uses_distinct_uid_and_clean_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    from sadoc.piworker import container_runtime_command
+
+    monkeypatch.setenv("SADOC_PODMAN_USER", "sadoc-podman")
+    monkeypatch.setattr("sadoc.piworker.os.getuid", lambda: 1000)
+    monkeypatch.setattr("sadoc.piworker.os.geteuid", lambda: 1000)
+    account = SimpleNamespace(pw_uid=1500, pw_dir="/var/lib/sadoc-podman")
+    monkeypatch.setattr("sadoc.piworker.pwd.getpwnam", lambda _: account)
+
+    command = container_runtime_command("podman")
+    assert command[:7] == ["/usr/bin/sudo", "-n", "-u", "#1500", "--", "/usr/bin/env", "-i"]
+    assert "HOME=/var/lib/sadoc-podman" in command
+    assert "XDG_RUNTIME_DIR=/run/user/1500" in command
+    assert command[-1] == "/usr/bin/podman"
+
+    account.pw_uid = 1000
+    with pytest.raises(PiError, match="separate unprivileged account"):
+        container_runtime_command("podman")
+
+
+def test_isolated_podman_cleanup_starts_from_a_public_directory(tmp_path, monkeypatch):
+    import subprocess
+
+    prefix = ["/usr/bin/sudo", "-n", "-u", "#955", "/usr/bin/podman"]
+    monkeypatch.setattr("sadoc.piworker.container_runtime_command", lambda _: prefix)
+    session = PiSession(
+        tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path, allow_containers=True
+    )
+    monkeypatch.setattr(session, "_build_env", lambda: {"SADOC_CACHE_DIR": str(tmp_path)})
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, "abc123\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+    )
+    monkeypatch.setattr("sadoc.piworker.subprocess.run", run)
+
+    session._cleanup_containers()
+
+    assert [call.kwargs.get("cwd") for call in run.call_args_list] == ["/tmp", "/tmp"]

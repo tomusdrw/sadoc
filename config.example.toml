@@ -17,6 +17,11 @@ owners = []
 # Optional: restrict to a single owner. Empty means "any owner listed above".
 owner = ""
 
+[github]
+# "gh" uses the existing gh login. "app" uses a GitHub App installation token.
+mode = "gh"
+# app_id = 123456  # App mode also requires a single non-empty owner above.
+
 [schedule]
 # Wall-clock window for the nightly run.
 window            = "01:00-07:00"
