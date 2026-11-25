@@ -59,6 +59,50 @@ def test_config_reads_sections(tmp_path):
     assert cfg.model_for("bump").model == cfg.base_model.model
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("0", 0), ("0.99", 0.99), ('"none"', "none"), ('"low"', "low"), ('"max"', "max")],
+)
+@pytest.mark.parametrize("section", ["model", "models.fixci"])
+def test_reasoning_effort_values(tmp_path, section, value, expected):
+    cfg = config_mod.load(write_config(tmp_path, f"[{section}]\nreasoning_effort = {value}"))
+    assert cfg.model_for("fixci").reasoning_effort == expected
+
+
+@pytest.mark.parametrize("section", ["model", "models.prepare"])
+@pytest.mark.parametrize("value", ["true", "1", "-0.1", "nan", "inf", '"off"', "[]"])
+def test_invalid_reasoning_effort_names_the_setting(tmp_path, section, value):
+    path = write_config(tmp_path, f"[{section}]\nreasoning_effort = {value}")
+    with pytest.raises(config_mod.ConfigError, match=rf"\[{section}\] reasoning_effort"):
+        config_mod.load(path)
+
+
+def test_reasoning_effort_inherits_and_overrides_by_task(tmp_path):
+    cfg = config_mod.load(write_config(tmp_path, "[models.bump]"))
+    assert cfg.model_for("bump").reasoning_effort is None
+    assert cfg.model_for("fixci").reasoning_effort is None
+
+    cfg = config_mod.load(
+        write_config(
+            tmp_path,
+            """
+            [model]
+            reasoning_effort = "medium"
+
+            [models.bump]
+            model = "bump-model"
+
+            [models.fixci]
+            reasoning_effort = 0
+            """,
+        )
+    )
+    assert cfg.model_for("bump").model == "bump-model"
+    assert cfg.model_for("bump").reasoning_effort == "medium"
+    assert cfg.model_for("fixci").reasoning_effort == 0
+    assert cfg.model_for("review").reasoning_effort == "medium"
+
+
 def test_state_records_and_queries(tmp_path):
     st = state_mod.State(tmp_path / "state.db")
     try:

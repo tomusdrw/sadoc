@@ -8,11 +8,12 @@ from unittest.mock import Mock
 import pytest
 
 from sadoc import sanitize, semver
-from sadoc.config import Config
+from sadoc.config import Config, ModelSpec
 from sadoc.detect import Update
 from sadoc.gitops import Git
 from sadoc.pipeline import Worker
 from sadoc.piworker import PiError, PiPromptTimeout, TurnResult
+from sadoc.report import build
 from sadoc.state import State
 
 ASSESSMENT = """### widget 1.0.0 → 2.0.0
@@ -70,6 +71,7 @@ def project(tmp_path, monkeypatch):
 
         def __init__(self, **kwargs):
             self.allow_network = kwargs["allow_network"]
+            self.model = kwargs["model"]
 
         def start(self):
             pass
@@ -159,6 +161,39 @@ def test_nonbreaking_updates_skip_assessment(project):
     assert result.status == "pr_opened", result.detail
     assert project.session.events == ["bump", "prnote"]
     assert "Major-version impact" not in project.gh.open_pr.call_args.args[3]
+
+
+def test_effort_changes_for_migration_and_ci_repair(project, monkeypatch):
+    project.worker.cfg.default_model.reasoning_effort = "medium"
+    project.worker.cfg.models["migrate"] = ModelSpec(reasoning_effort=0)
+    project.worker.cfg.models["fixci"] = ModelSpec(reasoning_effort="low")
+    project.worker.run_verify.side_effect = [(False, "needs migration"), (True, "fixed")]
+    project.worker.watch_ci.side_effect = ["fail", "pass"]
+    project.worker._failing_workflow = Mock(return_value=None)
+    project.worker.base_branch_is_also_failing = Mock(return_value=(False, ""))
+    original_prompt = project.session.prompt
+
+    def prompt(session, text, **kwargs):
+        if "## Failure output" in text:
+            assert session.model.reasoning_effort == 0
+        if "## Updates to apply" in text:
+            assert session.model.reasoning_effort == "medium"
+        return original_prompt(session, text, **kwargs)
+
+    def fix_ci(owner, repo, number, branch, base, updates, git, session):
+        assert session.model.reasoning_effort == "low"
+        return "fixed"
+
+    monkeypatch.setattr(project.session, "prompt", prompt)
+    monkeypatch.setattr(project.worker, "fix_ci", fix_ci)
+    result = project.run("A", [update(latest="1.1.0")])
+
+    assert result.status == "pr_opened", result.detail
+    assert result.ci_state == "pass"
+    summary = next(line for line in build(project.state).splitlines() if "Reasoning effort" in line)
+    assert "reasoning_effort=0 (task migrate)" in summary
+    assert "reasoning_effort=medium (task bump)" in summary
+    assert "reasoning_effort=low (task fixci)" in summary
 
 
 @pytest.mark.parametrize("report", ["NONE", "The agent used sadoc to inspect the changelog."])

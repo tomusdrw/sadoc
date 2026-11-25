@@ -18,6 +18,16 @@ def build(state: State, note: str = "") -> str:
     if note:
         lines += [note, ""]
 
+    since = time.time() - 86400
+    efforts = state.conn.execute(
+        "SELECT DISTINCT message FROM events WHERE ts > ? "
+        "AND message GLOB 'reasoning_effort=* (task *)' ORDER BY message",
+        (since,),
+    ).fetchall()
+    if efforts:
+        summary = ", ".join(f"`{row['message']}`" for row in efforts)
+        lines += [f"**Reasoning effort (last 24h)** — {summary}", ""]
+
     rows = state.conn.execute(
         "SELECT repo, COUNT(*) n, "
         "SUM(CASE WHEN bump_kind='major' THEN 1 ELSE 0 END) majors, "
@@ -68,7 +78,7 @@ def build(state: State, note: str = "") -> str:
             "SELECT repo, stage, status, detail FROM attempts "
             "WHERE status IN ('failed','skipped') AND started_at > ? "
             "ORDER BY id DESC LIMIT 20",
-            (time.time() - 86400,),
+            (since,),
         )
     )
     if failures:

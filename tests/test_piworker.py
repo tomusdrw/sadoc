@@ -18,6 +18,23 @@ def session_with_events(tmp_path, *events):
     return session
 
 
+@pytest.mark.parametrize("effort", [None, 0, 0.9, "low"])
+def test_configures_chat_template_kwargs_only_when_set(tmp_path, effort):
+    model = PiModel("test", "http://localhost:1", "test")
+    if effort is not None:
+        model.reasoning_effort = effort
+    session = PiSession(tmp_path, model, tmp_path)
+    session._write_models_json()
+    spec = json.loads((tmp_path / "models.json").read_text())["providers"]["test"]["models"][0]
+    if effort is None:
+        assert "compat" not in spec
+    else:
+        assert spec["compat"] == {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {"reasoning_effort": effort},
+        }
+
+
 def test_provider_error_is_not_an_empty_success(tmp_path):
     session = session_with_events(
         tmp_path,
