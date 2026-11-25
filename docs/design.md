@@ -66,6 +66,8 @@ session's isolated `models.json`, with `thinkingFormat = "chat-template"`.
 Pi's OpenAI completions provider sends it as
 `chat_template_kwargs.reasoning_effort`. This requires a pi version that
 supports chat-template compatibility (verified with 1.6.0).
+Setting an effort enables pi's reasoning support for that session so the
+provider applies the chat-template options.
 The update pipeline starts a fresh session when moving into migration or CI
 repair with a different effort. It reuses the session when the effort is the
 same. The run log records the selected effort with its repository and task.

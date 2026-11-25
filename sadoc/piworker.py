@@ -306,6 +306,8 @@ class PiSession:
             "reasoning": self.model.reasoning,
         }
         if self.model.reasoning_effort is not None:
+            # Pi only applies chat-template thinking options to reasoning models.
+            model["reasoning"] = True
             model["compat"] = {
                 "thinkingFormat": "chat-template",
                 "chatTemplateKwargs": {"reasoning_effort": self.model.reasoning_effort},
