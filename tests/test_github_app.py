@@ -165,3 +165,57 @@ def test_git_uses_separate_metadata_from_the_checkout_copy(tmp_path):
     (metadata / "HEAD").write_text("invalid\n")
     assert git.commit_sha() == original
     assert git.status() == ""
+
+
+def test_app_commit_identity_uses_the_bot_user_id(monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from sadoc.gh import Gh
+    from sadoc.github_app import GitHubApp
+
+    app = GitHubApp(5901719, "tomusdrw")
+    monkeypatch.setattr(app, "_jwt", lambda: "jwt")
+    monkeypatch.setattr(
+        app,
+        "_request",
+        Mock(
+            side_effect=[
+                [{"id": 11, "app_slug": "sadoc-test", "account": {"login": "tomusdrw"}}],
+                {"token": "token", "expires_at": datetime(2099, 1, 1, tzinfo=UTC).isoformat()},
+            ]
+        ),
+    )
+    gh = Gh(app=app)
+    api = Mock(return_value={"login": "sadoc-test[bot]", "id": 12345})
+    monkeypatch.setattr(gh, "api", api)
+    expected = ("sadoc-test[bot]", "12345+sadoc-test[bot]@users.noreply.github.com")
+    assert gh.app_commit_identity == gh.app_commit_identity == expected
+    api.assert_called_once_with("users/sadoc-test%5Bbot%5D")
+
+
+def test_commit_identity_overrides_local_config_and_environment(tmp_path, monkeypatch):
+    from sadoc.gitops import Git
+
+    for variable in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(variable, "Personal")
+    for variable in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(variable, "personal@example.com")
+    name = "sadoc-test[bot]"
+    email = "12345+sadoc-test[bot]@users.noreply.github.com"
+    git = Git(tmp_path, commit_identity=lambda: (name, email))
+    git._run("init")
+    git._run("config", "user.name", "Local User")
+    git._run("config", "user.email", "local@example.com")
+    git._run("config", "commit.gpgsign", "true")
+    (tmp_path / "dependency.txt").write_text("updated\n")
+
+    git.commit("Update dependency")
+
+    assert git._run("log", "-1", "--format=%an%n%ae%n%cn%n%ce").splitlines() == [
+        name,
+        email,
+        name,
+        email,
+    ]
+    assert git._run("config", "user.email").strip() == "local@example.com"

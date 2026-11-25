@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from functools import cached_property
+from urllib.parse import quote
 
 from . import sanitize
 from .github_app import GitHubApp
@@ -144,6 +146,18 @@ class Gh:
             *[f"{k}={v}" for k, v in params.items() if v is not None],
         )
         return json.loads(out) if out.strip() else {}
+
+    @cached_property
+    def app_commit_identity(self) -> tuple[str, str]:
+        """Resolve the bot account's Git author and committer identity."""
+        if self.app is None:
+            raise GhError("a GitHub App installation is required for the bot identity")
+        login = self.app.bot_login()
+        user = self.api(f"users/{quote(login, safe='')}")
+        user_id = user.get("id") if isinstance(user, dict) else None
+        if type(user_id) is not int or user_id <= 0 or user.get("login") != login:
+            raise GhError("GitHub did not return the expected bot account")
+        return login, f"{user_id}+{login}@users.noreply.github.com"
 
     # ------------------------------------------------------------- repos
     def my_repos(self, limit: int = 500, owner: str | None = None) -> list[dict]:

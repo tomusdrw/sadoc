@@ -463,7 +463,12 @@ class Worker:
             if self.cfg.github_app_id:
                 # App-authenticated Git never follows the checkout's .git pointer.
                 with TemporaryDirectory(prefix="sadoc-git-", dir="/tmp") as private:
-                    git = Git(dest, github_token=self.gh.app.token, git_dir=Path(private).resolve())
+                    git = Git(
+                        dest,
+                        github_token=self.gh.app.token,
+                        git_dir=Path(private).resolve(),
+                        commit_identity=lambda: self.gh.app_commit_identity,
+                    )
                     git.clone(url, branch)
                     if self.cfg.allow_containers and (
                         worker := os.environ.get("SADOC_PODMAN_USER")
@@ -1834,8 +1839,8 @@ class Worker:
                             raise
                         # No PR refers to the leftover branch and its history has
                         # diverged from ours. It may be a person's work - commits
-                        # carry the user's own identity either way - so it is not
-                        # ours to overwrite. Push under the next free name.
+                        # do not establish that this branch belongs to the
+                        # current attempt. Leave it untouched. Push under the next free name.
                         replacement = self._next_free_branch(git, branch)
                         if replacement is None:
                             raise
