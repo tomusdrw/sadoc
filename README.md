@@ -386,6 +386,8 @@ from 0 to 0.99 or one of `"none"`, `"minimal"`, `"low"`, `"medium"`,
 `[model]`. A task table with only this option uses the model from `[model]`.
 When neither table sets the value, the server uses the template's
 default. This option requires pi with `chatTemplateKwargs` support.
+If only some of your model endpoints support this field, set it in the task
+tables for those endpoints and leave it unset in `[model]`.
 
 ### Working out how to build a project
 

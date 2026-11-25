@@ -75,6 +75,10 @@ session when the effort is the same. The run log records the selected effort
 with its repository and task.
 The digest lists the distinct task and effort combinations from the last 24 hours.
 
+Run `pytest tests/test_piworker.py -k sends_configured_reasoning_effort` with a
+compatible pi on `PATH` to verify the HTTP payload. The test runs a loopback
+catcher that replies with SSE, so it needs no model server or GitHub access.
+
 ---
 
 ## 3. The sandbox
