@@ -163,14 +163,16 @@ class State:
         },
     }
 
-    def __init__(self, path: str | Path = DEFAULT_DB):
+    def __init__(self, path: str | Path = DEFAULT_DB, *, worker: bool = False):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._worker = worker
         self.conn = sqlite3.connect(str(self.path), timeout=30)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        if not worker:
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+            self.conn.commit()
 
     def _migrate(self) -> None:
         for table, columns in self.MIGRATIONS.items():
@@ -195,6 +197,10 @@ class State:
     @contextmanager
     def tx(self):
         try:
+            if self._worker:
+                # The coordinator initializes the schema before any worker starts.
+                # Each worker connection acquires SQLite's writer lock up front.
+                self.conn.execute("BEGIN IMMEDIATE")
             yield self.conn
             self.conn.commit()
         except Exception:

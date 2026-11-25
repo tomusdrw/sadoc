@@ -370,6 +370,8 @@ options that matter most:
 | `scope.skip_forks` | skip forks (on by default - vendored forks produce unreviewable diffs) |
 | `scope.max_inactive_days` | ignore repositories untouched for a while |
 | `schedule.max_prs_per_night` | cap on pull requests per night |
+| `run.workers` | number of concurrent workers for `sadoc run` (1–3, default 1) |
+| `run.require_slots` | abort a parallel run if a model server has too few slots or its capacity is unknown |
 | `merge.auto_merge_tier` | which tiers may merge themselves |
 | `sandbox.allow_network` | the model needs network to install packages |
 | `sandbox.allow_containers` | build test environments in rootless container images instead of on the machine |
@@ -378,6 +380,22 @@ options that matter most:
 | `repos.<name>.verify` | the local verification command for one repository |
 | `persona.*` | the name and voice used in emails and comments |
 | `disable_dependabot` | switch Dependabot off in the repositories handled here |
+
+### Parallel nightly updates
+
+Keep `workers = 1` while rolling out `reasoning_effort` and `[timeouts]`. Measure
+their effect for one or two nights before trying `[run] workers = 2`.
+
+For parallel inference, configure llama-server with at least as many slots as
+workers (`--parallel` / `-np`). Check the context available per slot when sizing
+the server. Sadoc reads the `total_slots` field from `/props` and logs a warning
+for insufficient or unknown capacity. Set `require_slots = true` to make that
+check mandatory. Server configuration and restarts are managed separately.
+
+Workers take the highest-priority available group from the existing queue, with
+one active group per repository. The pool shares the configured PR budget,
+capped at five for the parallel `run` command. All workers write to the same
+database and nightly log, where their messages carry prefixes such as `[w1]`.
 
 ### Working out how to build a project
 

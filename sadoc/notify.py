@@ -80,11 +80,14 @@ class ConsoleBackend(Backend):
 
     name = "console"
 
+    def __init__(self, *, write=print):
+        self._write = write
+
     def send(self, message: Message) -> str:
-        print(f"--- EMAIL TO {', '.join(message.to)} ---")
-        print(f"Subject: {message.subject}")
-        print(message.text)
-        print("--- end email ---")
+        self._write(f"--- EMAIL TO {', '.join(message.to)} ---")
+        self._write(f"Subject: {message.subject}")
+        self._write(message.text)
+        self._write("--- end email ---")
         return "console"
 
 

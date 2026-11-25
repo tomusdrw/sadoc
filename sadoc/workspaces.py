@@ -10,6 +10,7 @@ import re
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 
 from .gitops import GitError
@@ -88,28 +89,55 @@ def recover(workdir: Path) -> None:
         _recover(workdir, root)
 
 
-@contextmanager
-def checkout(workdir: Path, owner: str, repo: str) -> Iterator[Path]:
-    """Lease one disposable path, cleaning it even if cloning itself fails."""
+def _checkout_name(owner: str, repo: str) -> str:
     name = f"{owner}__{repo}"
     match = _NAME.fullmatch(name)
     if not match or match.groups() != (owner, repo) or repo in (".", ".."):
         raise WorkspaceError(f"invalid repository name: {owner}/{repo}")
+    return name
+
+
+@contextmanager
+def _lease(path: Path) -> Iterator[Path]:
+    error = None
+    try:
+        yield path
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        try:
+            _remove(path)
+        except OSError as exc:
+            detail = f"checkout cleanup failed for {path}: {exc}"
+            if error is None:
+                raise WorkspaceError(detail) from exc
+            error.add_note(detail)
+            logging.getLogger(__name__).error(detail)
+
+
+@contextmanager
+def checkout(workdir: Path, owner: str, repo: str) -> Iterator[Path]:
+    """Lease one disposable path, cleaning it even if cloning itself fails."""
+    name = _checkout_name(owner, repo)
     with _locked(workdir) as root:
         _recover(workdir, root)
-        path = root / name
-        error = None
-        try:
+        with _lease(root / name) as path:
             yield path
-        except BaseException as exc:
-            error = exc
-            raise
-        finally:
-            try:
-                _remove(path)
-            except OSError as exc:
-                detail = f"checkout cleanup failed for {path}: {exc}"
-                if error is None:
-                    raise WorkspaceError(detail) from exc
-                error.add_note(detail)
-                logging.getLogger(__name__).error(detail)
+
+
+@contextmanager
+def _pool_checkout(root: Path, owner: str, repo: str) -> Iterator[Path]:
+    path = root / _checkout_name(owner, repo)
+    # A previous group for this repository may have failed to clean up.
+    _remove(path)
+    with _lease(path):
+        yield path
+
+
+@contextmanager
+def pool_checkouts(workdir: Path):
+    """Keep other Sadoc processes out while the scheduler leases distinct repos."""
+    with _locked(workdir) as root:
+        _recover(workdir, root)
+        yield partial(_pool_checkout, root)

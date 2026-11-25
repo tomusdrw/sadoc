@@ -133,6 +133,8 @@ class PiSession:
         discovery: bool = False,
         container_runtime: str = "podman",
         http_idle_timeout_s: int | None = None,
+        *,
+        session_suffix: str = "",
     ):
         self.cwd = str(cwd)
         self.model = model
@@ -153,6 +155,8 @@ class PiSession:
         self._discovery = discovery
         self._http_idle_timeout_s = http_idle_timeout_s
         self._session_id = uuid.uuid4().hex[:12]
+        if session_suffix:
+            self._session_id += f"-{session_suffix}"
         self.transcript: list[dict] = []
         self._tool_history: deque[dict] = deque(maxlen=40)
         self._active_tools: dict[str, dict] = {}
