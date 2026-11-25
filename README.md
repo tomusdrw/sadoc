@@ -374,10 +374,18 @@ options that matter most:
 | `sandbox.allow_network` | the model needs network to install packages |
 | `sandbox.allow_containers` | build test environments in rootless container images instead of on the machine |
 | `sandbox.container_runtime` | which rootless runtime to use (`podman`; Docker is refused) |
-| `models.<task>` | a different model per task (bump / migrate / fixci / review) |
+| `models.<task>` | a different model per task (bump / migrate / prepare / fixci / review) |
+| `model.reasoning_effort` / `models.<task>.reasoning_effort` | optional chat-template effort for the default model or a specific task |
 | `repos.<name>.verify` | the local verification command for one repository |
 | `persona.*` | the name and voice used in emails and comments |
 | `disable_dependabot` | switch Dependabot off in the repositories handled here |
+
+With Inkling-2-Mini on llama-server, `reasoning_effort` accepts a number
+from 0 to 0.99 or one of `"none"`, `"minimal"`, `"low"`, `"medium"`,
+`"high"`, `"xhigh"`, and `"max"`. Task settings take precedence over
+`[model]`. A task table with only this option uses the model from `[model]`.
+When neither table sets the value, the server uses the template's
+default. This option requires pi with `chatTemplateKwargs` support.
 
 ### Working out how to build a project
 

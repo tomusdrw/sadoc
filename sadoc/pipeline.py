@@ -295,14 +295,7 @@ class Worker:
     def _analyze_failure(self, alert: alerts.Alert) -> alerts.Alert:
         stage, detail = alert.failure_context
         model = self.cfg.model_for("diagnose")
-        spec = PiModel(
-            name=f"depsbot-{model.provider}",
-            base_url=model.base_url,
-            model=model.model,
-            context=model.context,
-            max_tokens=model.max_tokens,
-            reasoning=model.reasoning,
-        )
+        spec = PiModel.from_spec(model)
         prompt = (
             "Explain this failed dependency-update operation for the repository maintainer. "
             "Write two short sections with bold labels **Diagnosis** and **Suggested next step**. "
@@ -324,6 +317,7 @@ class Worker:
                 )
                 try:
                     session.start()
+                    self._log_reasoning_effort(spec, alert.repo, "diagnose")
                     result = self._prompt(
                         session, prompt, report_only=True, timeout=90, idle_timeout=30
                     )
@@ -356,6 +350,12 @@ class Worker:
                 pass
         except Exception:  # noqa: BLE001
             pass
+
+    def _log_reasoning_effort(self, model: PiModel, repo: str | None, task: str) -> None:
+        if model.reasoning_effort is not None:
+            message = f"reasoning_effort={model.reasoning_effort} (task {task})"
+            self._safe_log(message, repo=repo)
+            self.state.log(message, repo=repo)
 
     # ------------------------------------------------------------- detect
     def detect_repo(self, owner: str, repo: str, branch: str) -> list[Update]:
@@ -716,14 +716,7 @@ class Worker:
             return result
         original_commit = git.commit_sha()
         model = self.cfg.models.get("prepare") or self.cfg.model_for("bump")
-        spec = PiModel(
-            name=f"depsbot-{model.provider}",
-            base_url=model.base_url,
-            model=model.model,
-            context=model.context,
-            max_tokens=model.max_tokens,
-            reasoning=model.reasoning,
-        )
+        spec = PiModel.from_spec(model)
         session = PiSession(
             cwd=git.path,
             model=spec,
@@ -738,6 +731,7 @@ class Worker:
         )
         try:
             session.start()
+            self._log_reasoning_effort(spec, f"{owner}/{repo}", "prepare")
             empty_result = result.copy()
             history: list[str] = []
             report_recovery_used = False
@@ -1195,14 +1189,7 @@ class Worker:
             git.create_branch(fix_branch)
 
             model = self.cfg.model_for("fixci")
-            spec = PiModel(
-                name=f"sadoc-{model.provider}",
-                base_url=model.base_url,
-                model=model.model,
-                context=model.context,
-                max_tokens=model.max_tokens,
-                reasoning=model.reasoning,
-            )
+            spec = PiModel.from_spec(model, prefix="sadoc")
             session = PiSession(
                 cwd=git.path,
                 model=spec,
@@ -1216,6 +1203,7 @@ class Worker:
             )
             try:
                 session.start()
+                self._log_reasoning_effort(spec, f"{owner}/{repo}", "fixci")
                 prompt = load_prompt(
                     "doctor",
                     JOB=diagnosis.failed_job or "the build",
@@ -1526,17 +1514,11 @@ class Worker:
                 if self.cfg.disable_dependabot and not dry_run:
                     self._hand_over_from_dependabot(owner, repo, default_branch)
 
-                model = self.cfg.model_for("migrate" if breaking_updates else "bump")
-                spec = PiModel(
-                    name=f"depsbot-{model.provider}",
-                    base_url=model.base_url,
-                    model=model.model,
-                    context=model.context,
-                    max_tokens=model.max_tokens,
-                    reasoning=model.reasoning,
-                )
+                task = "migrate" if breaking_updates else "bump"
+                spec = PiModel.from_spec(self.cfg.model_for(task))
 
                 def new_session() -> PiSession:
+                    self._log_reasoning_effort(spec, result.repo, task)
                     return PiSession(
                         cwd=git.path,
                         model=spec,
@@ -1584,6 +1566,24 @@ class Worker:
                 result.changes = []
 
                 session = new_session()
+                previous_transcript: list[dict] = []
+
+                def use_task(next_task: str) -> None:
+                    nonlocal session, spec, task
+                    if next_task == task:
+                        return
+                    task = next_task
+                    next_spec = PiModel.from_spec(self.cfg.model_for(task))
+                    if next_spec.reasoning_effort == spec.reasoning_effort:
+                        self._log_reasoning_effort(spec, result.repo, task)
+                        return
+                    previous_transcript.extend(session.transcript[-200:])
+                    del previous_transcript[:-200]
+                    session.close()
+                    spec = next_spec
+                    session = new_session()
+                    session.start()
+
                 try:
                     session.start()
                     # --- assess breaking changes before touching the code ------
@@ -1634,6 +1634,7 @@ class Worker:
                         )
                         result.changes = sorted(group.touch)
                     else:
+                        use_task("bump")
                         bump_prompt = load_prompt(
                             "bump",
                             UPDATES=render_updates(updates),
@@ -1701,6 +1702,7 @@ class Worker:
                     for recovering in (False, True):
                         if ok or engine_error:
                             break
+                        use_task("migrate")
                         migrate_prompt = load_prompt(
                             "migrate",
                             UPDATES=render_update_list(updates),
@@ -1908,8 +1910,8 @@ class Worker:
                         number or 0,
                         ref_id=ref_id,
                         tier=tier,
-                        model=model.model,
-                        base_url=model.base_url,
+                        model=spec.model,
+                        base_url=spec.base_url,
                         branch=branch,
                         updates=json.dumps([u.as_dict() for u in updates]),
                         agent_notes=(
@@ -1917,7 +1919,9 @@ class Worker:
                         )
                         + work_notes,
                         verify_output=output[-20000:],
-                        transcript=json.dumps(session.transcript[-200:])[-40000:],
+                        transcript=json.dumps(
+                            (previous_transcript + session.transcript[-200:])[-200:]
+                        )[-40000:],
                     )
                     self._apply_labels(owner, repo, number, tier)
                     self.state.log(f"opened PR {url} (ref {ref_id})", repo=f"{owner}/{repo}")
@@ -1969,6 +1973,7 @@ class Worker:
                         self.state.log(
                             "CI failed - feeding logs back to the model", repo=f"{owner}/{repo}"
                         )
+                        use_task("fixci")
                         note = self.fix_ci(
                             owner, repo, number, branch, default_branch, updates, git, session
                         )
@@ -2502,17 +2507,10 @@ class Worker:
                 return "conflict repair could not fetch the base or PR branch"
             git.create_branch(branch, start_point=f"origin/{branch}")
             original_head = git.commit_sha()
-            model = self.cfg.model_for("migrate")
+            spec = PiModel.from_spec(self.cfg.model_for("migrate"))
             session = PiSession(
                 cwd=git.path,
-                model=PiModel(
-                    f"depsbot-{model.provider}",
-                    model.base_url,
-                    model.model,
-                    model.context,
-                    model.max_tokens,
-                    model.reasoning,
-                ),
+                model=spec,
                 agent_dir=self.cfg.agent_dir,
                 http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                 allow_network=self.cfg.allow_network,
@@ -2528,6 +2526,7 @@ class Worker:
                     return "base already incorporated; mergeability will refresh on GitHub"
                 merge_head = git.commit_sha("MERGE_HEAD")
                 session.start()
+                self._log_reasoning_effort(spec, repo, "migrate")
                 if conflicts:
                     exclude = [f":(exclude,literal){path}" for path in conflicts]
                     other_changes = git._run("diff", "HEAD", "--", ".", *exclude)
@@ -2718,15 +2717,8 @@ class Worker:
                 return f"branch {branch} not found on the remote"
             git.create_branch(branch, start_point=f"origin/{branch}")
 
-            model = self.cfg.model_for("fixci" if repairing_ci else "review")
-            spec = PiModel(
-                name=f"depsbot-{model.provider}",
-                base_url=model.base_url,
-                model=model.model,
-                context=model.context,
-                max_tokens=model.max_tokens,
-                reasoning=model.reasoning,
-            )
+            task = "fixci" if repairing_ci else "review"
+            spec = PiModel.from_spec(self.cfg.model_for(task))
             updates = [] if tier == "D" else self._updates_for_pr(repo, tier, number=number)
             if branch.startswith("toolchains/") and not any(u.toolchain_plan for u in updates):
                 return "coordinated toolchain plan is missing; rescan required"
@@ -2742,6 +2734,7 @@ class Worker:
             )
             try:
                 session.start()
+                self._log_reasoning_effort(spec, repo, task)
                 if repairing_ci:
                     note = self.fix_ci(
                         owner,
