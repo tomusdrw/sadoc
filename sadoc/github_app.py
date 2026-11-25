@@ -68,6 +68,7 @@ class GitHubApp:
         self.app_id = app_id
         self.owner = owner
         self._installation: int | None = None
+        self._app_slug: str | None = None
         self._token = ""
         self._expires = 0.0
         self._lock = Lock()
@@ -144,6 +145,12 @@ class GitHubApp:
         except (OSError, ValueError) as exc:
             raise GitHubAppError(f"GitHub App {method} {path}: request failed") from exc
 
+    def bot_login(self) -> str:
+        self.token()
+        if not self._app_slug:
+            raise GitHubAppError("GitHub did not return the app slug for its installation")
+        return f"{self._app_slug}[bot]"
+
     def token(self) -> str:
         with self._lock:
             if self._expires > time.time() + 120:
@@ -159,6 +166,7 @@ class GitHubApp:
                 if len(matches) != 1:
                     raise GitHubAppError(f"expected one GitHub App installation for {self.owner}")
                 self._installation = matches[0]["id"]
+                self._app_slug = matches[0].get("app_slug")
             issued = self._request(
                 f"/app/installations/{self._installation}/access_tokens", jwt, "POST"
             )

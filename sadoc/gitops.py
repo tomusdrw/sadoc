@@ -44,6 +44,7 @@ class Git:
     path: Path
     github_token: Callable[[], str] | None = None
     git_dir: Path | None = None
+    commit_identity: Callable[[], tuple[str, str]] | None = None
 
     def _command(self, *args: str) -> list[str]:
         base = ["git", "-C", str(self.path)]
@@ -75,13 +76,34 @@ class Git:
         )
         return env
 
-    def _run(self, *args, check: bool = True, timeout: int = 600, network: bool = False) -> str:
+    def _identity_env(self) -> dict[str, str] | None:
+        if self.commit_identity is None:
+            return None
+        name, email = self.commit_identity()
+        return {
+            **os.environ,
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
+
+    def _run(
+        self,
+        *args,
+        check: bool = True,
+        timeout: int = 600,
+        network: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        if network and self.github_token:
+            env = self._network_env()
         proc = subprocess.run(
             self._command(*args),
             capture_output=True,
             text=True,
             timeout=timeout,
-            **({"env": self._network_env()} if network and self.github_token else {}),
+            **({"env": env} if env is not None else {}),
         )
         if check and proc.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:1500]}")
@@ -187,6 +209,7 @@ class Git:
             self._run("merge-base", "HEAD", ref)
         proc = subprocess.run(
             self._command("merge", "--no-commit", "--no-ff", ref),
+            env=self._identity_env(),
             capture_output=True,
             text=True,
             timeout=300,
@@ -280,10 +303,13 @@ class Git:
 
     def commit(self, message: str, author: str | None = None) -> str:
         self.stage_all()
+        env = self._identity_env()
         args = ["commit", "-m", message]
+        if env is not None:
+            args.append("--no-gpg-sign")
         if author:
             args += ["--author", author]
-        return self._run(*args, timeout=180)
+        return self._run(*args, timeout=180, env=env)
 
     def has_commits(self, branch: str) -> bool:
         out = self._run("log", "--oneline", "-1", branch, check=False)

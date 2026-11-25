@@ -168,8 +168,9 @@ app_id = 123456
 The app needs repository write access to Contents and Pull requests, and read
 access to Actions, Checks, and Commit statuses. Grant Workflows write access
 if Sadoc updates workflow files. Sadoc discovers repositories from the app
-installation and refreshes its token automatically. App mode uses OpenSSL to
-sign the authentication request.
+installation and refreshes its token automatically. Locally created commits
+use the installation's bot account as both author and committer. App mode
+uses OpenSSL to sign the authentication request.
 
 Before installing the key, stop Sadoc and any active pi sessions. Keep the
 single PEM copy in `~/.sadoc/github-app/private-key.pem` with mode `0600`.

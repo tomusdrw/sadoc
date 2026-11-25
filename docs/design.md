@@ -232,10 +232,10 @@ request, or a pull request that was closed unmerged. Before any work is done
 the runner skips a repo that already has an open dependency pull request, and
 just before the push it checks the exact branch again. If a push is still
 rejected as a non-fast-forward and no pull request refers to the branch, the
-leftover branch is not ours to overwrite — its commits carry the user's own
-identity, indistinguishable from a person's — so the update is pushed as
-`<branch>-2`, the next free name, instead. The remote branch is never
-force-pushed.
+runner preserves the leftover branch and pushes the update as `<branch>-2`,
+the next free name. App mode records the bot as author and committer on new
+commits. Branch ownership checks continue to rely on the pull request and
+remote history.
 
 ---
 
