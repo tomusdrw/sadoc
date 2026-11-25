@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import policy
+from .config import DEFAULT_PROMPT_WALL_CLOCK
 from .config import HOME as SADOC_HOME
 from .github_app import KEY_DIR, KEY_FD_ENV
 
@@ -125,12 +126,13 @@ class PiSession:
         agent_dir: str | Path,
         allow_network: bool = True,
         scrub_env: bool = True,
-        timeout_s: int = 1800,
+        timeout_s: int = DEFAULT_PROMPT_WALL_CLOCK,
         extra_args: list[str] | None = None,
         extra_secrets: list[str] | None = None,
         allow_containers: bool = False,
         discovery: bool = False,
         container_runtime: str = "podman",
+        http_idle_timeout_s: int | None = None,
     ):
         self.cwd = str(cwd)
         self.model = model
@@ -149,6 +151,7 @@ class PiSession:
         self._allow_containers = allow_containers
         self._container_runtime = container_runtime
         self._discovery = discovery
+        self._http_idle_timeout_s = http_idle_timeout_s
         self._session_id = uuid.uuid4().hex[:12]
         self.transcript: list[dict] = []
         self._tool_history: deque[dict] = deque(maxlen=40)
@@ -303,15 +306,14 @@ class PiSession:
             }
         }
         (self.agent_dir / "models.json").write_text(json.dumps(payload, indent=2))
-        (self.agent_dir / "settings.json").write_text(
-            json.dumps(
-                {
-                    "defaultProvider": self.model.name,
-                    "defaultModel": self.model.model,
-                },
-                indent=2,
-            )
-        )
+        settings: dict[str, str | int] = {
+            "defaultProvider": self.model.name,
+            "defaultModel": self.model.model,
+        }
+        if self._http_idle_timeout_s is not None:
+            # Pi defaults to 300 seconds for HTTP headers and body inactivity.
+            settings["httpIdleTimeoutMs"] = max(300_000, self._http_idle_timeout_s * 1000)
+        (self.agent_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 
     def start(self) -> None:
         if KEY_DIR.exists() and self._allow_containers:
