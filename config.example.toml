@@ -32,6 +32,13 @@ max_attempts      = 3
 # 0 = bounded by max_prs_per_night
 max_repos_per_night = 0
 
+[timeouts]
+# Optional overrides in seconds for all pi prompts. Omitted keys keep each
+# prompt's built-in limits. Inactivity must be less than prompt_wall_clock.
+# prompt_wall_clock = 5400
+# prompt_inactivity = 900
+# note_generation   = 1800
+
 [scope]
 # Repos to include even when policy would skip them (forks, other owners).
 include = []

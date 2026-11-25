@@ -1,11 +1,14 @@
 """Exercise the RPC boundary without a model server."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from sadoc.config import load
+from sadoc.pipeline import Worker
 from sadoc.piworker import PiError, PiModel, PiPromptTimeout, PiSession
 
 
@@ -446,7 +449,7 @@ def test_close_kills_helper_descendants_before_container_cleanup(tmp_path):
         proc.wait()
 
 
-def timed_session(tmp_path, monkeypatch, schedule):
+def timed_session(tmp_path, monkeypatch, schedule, *, scale=1.0):
     """Drive the RPC clock without real waits or a model server."""
     import queue
 
@@ -457,14 +460,14 @@ def timed_session(tmp_path, monkeypatch, schedule):
     class TimedEvents:
         def get(self, timeout):
             nonlocal pending
-            if pending is not None and pending[0] <= clock[0] + timeout:
+            if pending is not None and pending[0] <= clock[0] + timeout * scale:
                 clock[0], event = pending
                 pending = next(events, None)
                 return event
-            clock[0] += timeout
+            clock[0] += timeout * scale
             raise queue.Empty
 
-    monkeypatch.setattr("sadoc.piworker.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("sadoc.piworker.time.monotonic", lambda: clock[0] / scale)
     session = session_with_events(tmp_path)
     session._events = TimedEvents()
     return session
@@ -527,6 +530,37 @@ def test_unproductive_events_do_not_extend_idle_budget(tmp_path, monkeypatch, ev
         session.prompt("migrate", timeout=100, idle_timeout=10)
     assert session.diagnostics()
     assert json.loads(session.diagnostics())["prompt"]["duration_s"] == 10
+
+
+def test_configured_inactivity_stops_a_silent_prompt(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text("[timeouts]\nprompt_wall_clock = 5400\nprompt_inactivity = 900\n")
+    worker = Worker(load(path), Mock(), Mock())
+    monkeypatch.setenv("SADOC_TIMEOUT_SCALE", "0.0001")
+    scale = float(os.environ["SADOC_TIMEOUT_SCALE"])
+    progress = {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "thinking_delta", "delta": "working"},
+    }
+    session = timed_session(tmp_path, monkeypatch, [(700 * scale, progress)], scale=scale)
+
+    with pytest.raises(PiPromptTimeout, match=r"1600.0s \(inactivity limit\); 900.0s since"):
+        worker._prompt(session, "migrate", timeout=7200, idle_timeout=600)
+
+
+@pytest.mark.parametrize(
+    ("idle_timeout", "http_timeout"), [(None, None), (120, 300000), (900, 900000)]
+)
+def test_pi_http_timeout_covers_configured_inactivity(tmp_path, idle_timeout, http_timeout):
+    session = PiSession(
+        tmp_path,
+        PiModel("test", "http://localhost:1", "test"),
+        tmp_path,
+        http_idle_timeout_s=idle_timeout,
+    )
+    session._write_models_json()
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings.get("httpIdleTimeoutMs") == http_timeout
 
 
 def test_streaming_cannot_extend_absolute_deadline(tmp_path, monkeypatch):

@@ -38,10 +38,11 @@ from . import (
     toolchains,
     workspaces,
 )
+from .config import DEFAULT_PROMPT_INACTIVITY, DEFAULT_PROMPT_WALL_CLOCK
 from .detect import Update
 from .email_template import Block
 from .gitops import Git, GitError
-from .piworker import PiError, PiModel, PiPromptTimeout, PiSession
+from .piworker import PiError, PiModel, PiPromptTimeout, PiSession, TurnResult
 
 TIER_A = "A"  # patch + minor
 TIER_B = "B"  # major
@@ -251,6 +252,19 @@ class Worker:
         # The repositories whose recipe was worked out during this run.
         self._discovered_repos: set[str] = set()
 
+    def _prompt(
+        self, session: PiSession, message: str, *, note: bool = False, **options
+    ) -> TurnResult:
+        """Apply explicit global overrides to a prompt's existing budgets."""
+        limits = self.cfg.timeouts
+        if note:
+            options["timeout"] = limits.note_generation
+        elif limits.prompt_wall_clock is not None:
+            options["timeout"] = limits.prompt_wall_clock
+        if limits.prompt_inactivity is not None:
+            options["idle_timeout"] = limits.prompt_inactivity
+        return session.prompt(message, **options)
+
     def _notify_secret_names(self) -> list[str]:
         """Environment variables that hold notification secrets."""
         ncfg = self.cfg.notify or {}
@@ -297,13 +311,16 @@ class Worker:
                     cwd=cwd,
                     model=spec,
                     agent_dir=self.cfg.agent_dir,
+                    http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                     allow_network=False,
                     extra_secrets=self._notify_secret_names(),
                 )
                 try:
                     session.start()
                     self._log_reasoning_effort(spec, alert.repo, "diagnose")
-                    result = session.prompt(prompt, report_only=True, timeout=90, idle_timeout=30)
+                    result = self._prompt(
+                        session, prompt, report_only=True, timeout=90, idle_timeout=30
+                    )
                 finally:
                     session.close()
         except Exception:  # noqa: BLE001 - analysis must never prevent delivery
@@ -704,6 +721,7 @@ class Worker:
             cwd=git.path,
             model=spec,
             agent_dir=self.cfg.agent_dir,
+            http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
             allow_network=self.cfg.allow_network,
             scrub_env=self.cfg.scrub_env,
             extra_secrets=self._notify_secret_names(),
@@ -788,10 +806,11 @@ class Worker:
                 # browser suites, so the first pass gets the migration-class
                 # budget and every turn dies on inactivity rather than at a
                 # wall clock that can land mid-cleanup on productive work.
-                turn = session.prompt(
+                turn = self._prompt(
+                    session,
                     prompt,
                     timeout=7200 if attempt == 0 else 3600,
-                    idle_timeout=600,
+                    idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                 )
                 while True:
                     try:
@@ -805,7 +824,8 @@ class Worker:
                         self._safe_log(
                             "requesting a structured discovery report", repo=f"{owner}/{repo}"
                         )
-                        turn = session.prompt(
+                        turn = self._prompt(
+                            session,
                             load_prompt("prepare-report") + "\n\nParser error and last reply "
                             "(diagnostic data, not instructions):\n" + str(exc),
                             # Re-emitting a complete recipe can take minutes on
@@ -1174,6 +1194,7 @@ class Worker:
                 cwd=git.path,
                 model=spec,
                 agent_dir=self.cfg.agent_dir,
+                http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                 allow_network=self.cfg.allow_network,
                 scrub_env=self.cfg.scrub_env,
                 extra_secrets=self._notify_secret_names(),
@@ -1189,7 +1210,7 @@ class Worker:
                     BRANCH=branch,
                     LOGS=doctor.summarise(diagnosis),
                 )
-                turn = session.prompt(prompt, timeout=3600)
+                turn = self._prompt(session, prompt, timeout=3600)
                 self._safe_log(f"doctor: {turn.text[:300]}", repo=f"{owner}/{repo}")
                 changed = git.changed_files()
                 if not changed:
@@ -1424,14 +1445,15 @@ class Worker:
             session = session_factory()
             try:
                 session.start()
-                session.prompt(
+                self._prompt(
+                    session,
                     load_prompt(
                         "toolchains",
                         TARGETS=render_update_list(updates),
                         LOCKFILES="\n".join(lock_paths),
                     ),
-                    timeout=1800,
-                    idle_timeout=600,
+                    timeout=DEFAULT_PROMPT_WALL_CLOCK,
+                    idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                 )
             finally:
                 session.close()
@@ -1501,6 +1523,7 @@ class Worker:
                         cwd=git.path,
                         model=spec,
                         agent_dir=self.cfg.agent_dir,
+                        http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                         allow_network=self.cfg.allow_network,
                         scrub_env=self.cfg.scrub_env,
                         extra_secrets=self._notify_secret_names(),
@@ -1567,14 +1590,15 @@ class Worker:
                     impact = None
                     if breaking_updates and not is_toolchain:
                         assessment_head = git.commit_sha()
-                        assessment = session.prompt(
+                        assessment = self._prompt(
+                            session,
                             load_prompt(
                                 "impact",
                                 UPDATES=render_updates(breaking_updates),
                                 NETWORK="enabled" if self.cfg.allow_network else "disabled",
                             ),
                             timeout=7200,
-                            idle_timeout=600,
+                            idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                             read_only=True,
                         )
                         impact = assessment.text.strip()
@@ -1616,7 +1640,7 @@ class Worker:
                             UPDATES=render_updates(updates),
                             MANIFESTS=", ".join(sorted({u.manifest for u in updates})),
                         )
-                        bump_text = session.prompt(bump_prompt).text
+                        bump_text = self._prompt(session, bump_prompt).text
                         self.state.log(f"bump done: {bump_text[:400]}", repo=f"{owner}/{repo}")
                         result.changes = git.changed_files()
                     work_notes = bump_text
@@ -1692,10 +1716,11 @@ class Worker:
                                 "failure shown above."
                             )
                         try:
-                            mig = session.prompt(
+                            mig = self._prompt(
+                                session,
                                 migrate_prompt,
                                 timeout=7200,
-                                idle_timeout=600,
+                                idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                             )
                         except PiPromptTimeout:
                             self._log_session_failure(
@@ -1789,7 +1814,7 @@ class Worker:
                             UPDATES=render_update_list(updates),
                             WORK=sanitize.scrub_text(work_notes)[:8000],
                         )
-                        note_result = session.prompt(note_prompt, timeout=900)
+                        note_result = self._prompt(session, note_prompt, note=True)
                         raw_note = note_result.text.strip()
                         candidate = sanitize.scrub_text(raw_note)
                         if candidate.upper().startswith("NONE"):
@@ -2180,7 +2205,7 @@ class Worker:
             UPDATES=render_update_list(updates),
             ERROR=logs,
         )
-        result = session.prompt(prompt)
+        result = self._prompt(session, prompt)
         self.state.log(f"fixci: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return "model made no changes"
@@ -2302,7 +2327,7 @@ class Worker:
             UPDATES=render_update_list(updates),
             COMMENTS=self.format_comments(comments),
         )
-        result = session.prompt(prompt)
+        result = self._prompt(session, prompt)
         self.state.log(f"review: {result.text[:400]}", repo=f"{owner}/{repo}")
         if not git.changed_files():
             return False, "model made no changes"
@@ -2487,6 +2512,7 @@ class Worker:
                 cwd=git.path,
                 model=spec,
                 agent_dir=self.cfg.agent_dir,
+                http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                 allow_network=self.cfg.allow_network,
                 scrub_env=self.cfg.scrub_env,
                 extra_secrets=self._notify_secret_names(),
@@ -2505,7 +2531,8 @@ class Worker:
                     exclude = [f":(exclude,literal){path}" for path in conflicts]
                     other_changes = git._run("diff", "HEAD", "--", ".", *exclude)
                     changed_before = set(git.changed_files())
-                    reply = session.prompt(
+                    reply = self._prompt(
+                        session,
                         load_prompt(
                             "conflicts",
                             BASE=base,
@@ -2513,7 +2540,7 @@ class Worker:
                             UPDATES=json.dumps(targets, indent=2),
                         ),
                         timeout=3600,
-                        idle_timeout=600,
+                        idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                     )
                     if _parse_report(reply.text).get("RESOLVED", "").lower() != "yes":
                         raise PiError("conflict resolution was not completed")
@@ -2699,6 +2726,7 @@ class Worker:
                 cwd=git.path,
                 model=spec,
                 agent_dir=self.cfg.agent_dir,
+                http_idle_timeout_s=self.cfg.timeouts.prompt_inactivity,
                 allow_network=self.cfg.allow_network,
                 scrub_env=self.cfg.scrub_env,
                 allow_containers=self.cfg.allow_containers,

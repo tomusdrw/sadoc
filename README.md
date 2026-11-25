@@ -153,6 +153,31 @@ Nothing is written outside it except the systemd units in
 [12:00:00]   IN  you/some-repo  (pushed 2026-10-05)
 ```
 
+### Pi prompt timeouts
+
+Add optional global overrides to `~/.sadoc/config.toml`:
+
+```toml
+[timeouts]
+prompt_wall_clock = 5400
+prompt_inactivity = 900
+note_generation   = 1800
+```
+
+All values are positive integer seconds. `prompt_wall_clock` caps the duration
+of each model prompt, including time spent running tools. `prompt_inactivity`
+caps the silence between progress events and must be shorter than
+`prompt_wall_clock` and at most 2147483 seconds (Pi's HTTP timer limit).
+`note_generation` sets the separate wall-clock limit
+for generating the PR note, which also uses the configured inactivity limit.
+
+Omitted keys preserve the built-in budgets. The base wall-clock budget is
+1800 seconds, the usual inactivity budget where enabled is 600 seconds,
+and the PR note has a 900-second wall-clock budget. Discovery, migration,
+and other stages with their own built-in budgets retain those defaults
+for omitted keys. At startup, `sadoc run` logs the global values and the
+deadline it received from the nightly wrapper. See [the design notes](docs/design.md#11-project-discovery-and-recipe-replay).
+
 ### GitHub authentication
 
 By default, Sadoc uses the existing `gh` login and Git credentials.
