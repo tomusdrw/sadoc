@@ -358,7 +358,8 @@ options that matter most:
 With Inkling-2-Mini on llama-server, `reasoning_effort` accepts a number
 from 0 to 0.99 or one of `"none"`, `"minimal"`, `"low"`, `"medium"`,
 `"high"`, `"xhigh"`, and `"max"`. Task settings take precedence over
-`[model]`. When neither table sets the value, the server uses the template's
+`[model]`. A task table with only this option uses the model from `[model]`.
+When neither table sets the value, the server uses the template's
 default. This option requires pi with `chatTemplateKwargs` support.
 
 ### Working out how to build a project

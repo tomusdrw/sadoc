@@ -67,11 +67,11 @@ def project(tmp_path, monkeypatch):
         assessment_edit = False
         events = []
         prompts = {}
-        transcript = []
 
         def __init__(self, **kwargs):
             self.allow_network = kwargs["allow_network"]
             self.model = kwargs["model"]
+            self.transcript = []
 
         def start(self):
             pass
@@ -79,6 +79,7 @@ def project(tmp_path, monkeypatch):
         def prompt(self, text, **kwargs):
             if "## Breaking updates to assess" in text:
                 self.events.append("impact")
+                self.transcript.append({"phase": "impact", "effort": self.model.reasoning_effort})
                 self.prompts["impact"] = text
                 self.prompts["impact_options"] = kwargs
                 assert not git.changed_files()
@@ -90,6 +91,7 @@ def project(tmp_path, monkeypatch):
             if "## Updates to apply" in text:
                 assert not kwargs.get("read_only")
                 self.events.append("bump")
+                self.transcript.append({"phase": "bump", "effort": self.model.reasoning_effort})
                 (root / "package.json").write_text(
                     json.dumps({"dependencies": {u.name: f"^{u.latest}" for u in self.updates}})
                     + "\n"
@@ -97,6 +99,7 @@ def project(tmp_path, monkeypatch):
                 return TurnResult(text="NOTES: Updated widget.", settled=True)
             if "## Failure output" in text:
                 self.events.append("migrate")
+                self.transcript.append({"phase": "migrate", "effort": self.model.reasoning_effort})
                 self.prompts["migrate"] = text
                 return TurnResult(text="NOTES: Replaced connect_sync with connect.", settled=True)
             self.events.append("prnote")
@@ -194,6 +197,23 @@ def test_effort_changes_for_migration_and_ci_repair(project, monkeypatch):
     assert "reasoning_effort=0 (task migrate)" in summary
     assert "reasoning_effort=medium (task bump)" in summary
     assert "reasoning_effort=low (task fixci)" in summary
+    assert json.loads(project.state.pr_details("o/r", 7)["transcript"]) == [
+        {"phase": "bump", "effort": "medium"},
+        {"phase": "migrate", "effort": 0},
+    ]
+
+
+def test_breaking_update_uses_bump_effort_for_manifest_edit(project):
+    project.worker.cfg.models["bump"] = ModelSpec(reasoning_effort="low")
+    project.worker.cfg.models["migrate"] = ModelSpec(reasoning_effort="medium")
+
+    result = project.run("B", [update()])
+
+    assert result.status == "pr_opened", result.detail
+    assert json.loads(project.state.pr_details("o/r", 7)["transcript"]) == [
+        {"phase": "impact", "effort": "medium"},
+        {"phase": "bump", "effort": "low"},
+    ]
 
 
 @pytest.mark.parametrize("report", ["NONE", "The agent used sadoc to inspect the changelog."])

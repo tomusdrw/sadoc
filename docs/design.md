@@ -58,7 +58,8 @@ Four things about this integration are not in the documentation:
 
 For an endpoint whose chat template supports it, set `reasoning_effort` in
 `[model]` and override it in `[models.<task>]`. A task without an override
-inherits the global effort. Leaving both unset lets the server choose its
+inherits the global effort. A task table with only `reasoning_effort` uses the
+model and endpoint from `[model]`. Leaving both unset lets the server choose its
 default (0.9 for Inkling-2-Mini).
 
 Sadoc writes the configured value to `compat.chatTemplateKwargs` in the
@@ -68,9 +69,10 @@ Pi's OpenAI completions provider sends it as
 supports chat-template compatibility (verified with 1.6.0).
 Setting an effort enables pi's reasoning support for that session so the
 provider applies the chat-template options.
-The update pipeline starts a fresh session when moving into migration or CI
-repair with a different effort. It reuses the session when the effort is the
-same. The run log records the selected effort with its repository and task.
+The update pipeline starts a fresh session when the next phase needs a different
+effort and keeps earlier turns in the bounded local transcript. It reuses the
+session when the effort is the same. The run log records the selected effort
+with its repository and task.
 The digest lists the distinct task and effort combinations from the last 24 hours.
 
 ---

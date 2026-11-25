@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # Everything sadoc owns lives under one root: the configuration, the secrets,
@@ -214,7 +214,10 @@ def load(path: str | Path | None = None) -> Config:
     model_raw = raw.get("model", {})
     cfg.default_model = _model_from(model_raw, "model")
     for name, spec in (raw.get("models") or {}).items():
-        cfg.models[name] = _model_from(spec, f"models.{name}", cfg.default_model.reasoning_effort)
+        model = _model_from(spec, f"models.{name}", cfg.default_model.reasoning_effort)
+        if spec.keys() == {"reasoning_effort"}:
+            model = replace(cfg.default_model, reasoning_effort=model.reasoning_effort)
+        cfg.models[name] = model
     cfg.models.setdefault("base", cfg.default_model)
 
     cfg.repos = raw.get("repos", {}) or {}

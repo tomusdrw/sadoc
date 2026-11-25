@@ -1543,6 +1543,24 @@ class Worker:
                 result.changes = []
 
                 session = new_session()
+                previous_transcript: list[dict] = []
+
+                def use_task(next_task: str) -> None:
+                    nonlocal session, spec, task
+                    if next_task == task:
+                        return
+                    task = next_task
+                    next_spec = PiModel.from_spec(self.cfg.model_for(task))
+                    if next_spec.reasoning_effort == spec.reasoning_effort:
+                        self._log_reasoning_effort(spec, result.repo, task)
+                        return
+                    previous_transcript.extend(session.transcript[-200:])
+                    del previous_transcript[:-200]
+                    session.close()
+                    spec = next_spec
+                    session = new_session()
+                    session.start()
+
                 try:
                     session.start()
                     # --- assess breaking changes before touching the code ------
@@ -1592,6 +1610,7 @@ class Worker:
                         )
                         result.changes = sorted(group.touch)
                     else:
+                        use_task("bump")
                         bump_prompt = load_prompt(
                             "bump",
                             UPDATES=render_updates(updates),
@@ -1659,14 +1678,7 @@ class Worker:
                     for recovering in (False, True):
                         if ok or engine_error:
                             break
-                        migrate_spec = PiModel.from_spec(self.cfg.model_for("migrate"))
-                        if migrate_spec.reasoning_effort != spec.reasoning_effort:
-                            session.close()
-                            spec, task = migrate_spec, "migrate"
-                            session = new_session()
-                            session.start()
-                        elif task != "migrate":
-                            self._log_reasoning_effort(spec, result.repo, "migrate")
+                        use_task("migrate")
                         migrate_prompt = load_prompt(
                             "migrate",
                             UPDATES=render_update_list(updates),
@@ -1882,7 +1894,9 @@ class Worker:
                         )
                         + work_notes,
                         verify_output=output[-20000:],
-                        transcript=json.dumps(session.transcript[-200:])[-40000:],
+                        transcript=json.dumps(
+                            (previous_transcript + session.transcript[-200:])[-200:]
+                        )[-40000:],
                     )
                     self._apply_labels(owner, repo, number, tier)
                     self.state.log(f"opened PR {url} (ref {ref_id})", repo=f"{owner}/{repo}")
@@ -1934,14 +1948,7 @@ class Worker:
                         self.state.log(
                             "CI failed - feeding logs back to the model", repo=f"{owner}/{repo}"
                         )
-                        fixci_spec = PiModel.from_spec(self.cfg.model_for("fixci"))
-                        if fixci_spec.reasoning_effort != spec.reasoning_effort:
-                            session.close()
-                            spec, task = fixci_spec, "fixci"
-                            session = new_session()
-                            session.start()
-                        elif task != "fixci":
-                            self._log_reasoning_effort(spec, result.repo, "fixci")
+                        use_task("fixci")
                         note = self.fix_ci(
                             owner, repo, number, branch, default_branch, updates, git, session
                         )

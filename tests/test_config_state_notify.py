@@ -103,6 +103,30 @@ def test_reasoning_effort_inherits_and_overrides_by_task(tmp_path):
     assert cfg.model_for("review").reasoning_effort == "medium"
 
 
+def test_effort_only_override_keeps_the_default_endpoint(tmp_path):
+    cfg = config_mod.load(
+        write_config(
+            tmp_path,
+            """
+            [model]
+            provider = "lan"
+            model = "inkling-2-mini"
+            base_url = "http://localhost:8094/v1"
+
+            [models.fixci]
+            reasoning_effort = "low"
+            """,
+        )
+    )
+    model = cfg.model_for("fixci")
+    assert (model.provider, model.model, model.base_url) == (
+        "lan",
+        "inkling-2-mini",
+        "http://localhost:8094/v1",
+    )
+    assert model.reasoning_effort == "low"
+
+
 def test_state_records_and_queries(tmp_path):
     st = state_mod.State(tmp_path / "state.db")
     try:
