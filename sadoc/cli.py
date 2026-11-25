@@ -196,6 +196,16 @@ def cmd_scope(args, cfg, gh, state) -> int:
 
 # -------------------------------------------------------------------- run
 def cmd_run(args, cfg, gh, state) -> int:
+    deadline = getattr(args, "deadline", None)
+    try:
+        deadline_label = time.strftime("%H:%M", time.localtime(deadline)) if deadline else "none"
+    except (OverflowError, OSError, ValueError):
+        deadline_label = str(deadline)
+    limits = cfg.timeouts
+    _log(
+        f"limits: wall={limits.wall_clock}s inactivity={limits.inactivity}s "
+        f"note={limits.note_generation}s deadline={deadline_label}"
+    )
     worker = pipeline.Worker(
         cfg, gh, state, log=_log, notifier=_make_notifier(cfg, state, cfg.dry_run)
     )
@@ -240,7 +250,6 @@ def cmd_run(args, cfg, gh, state) -> int:
         return 1
 
     budget = args.max_prs if args.max_prs is not None else cfg.max_prs_per_night
-    deadline = getattr(args, "deadline", None)
     opened = 0
     results = []
     for priority, entry, groups in candidates:

@@ -307,8 +307,8 @@ the matcher evaluates every comparison rather than only the first.
 
 ## 11. Project discovery and recipe replay
 
-Initial discovery has a two-hour deadline (each repair turn half of it) and a
-ten-minute inactivity limit, matching the migration budgets: heavy recipes
+By default, initial discovery has a two-hour deadline (each repair turn half
+of it) and a ten-minute inactivity limit, matching the migration budgets: heavy recipes
 install toolchains, build, seed databases and run browser suites, and a hard
 kill has landed on fully productive work minutes before the final reply. The
 inactivity limit bounds a wedged session without punishing quiet-but-progressing
@@ -323,6 +323,25 @@ test databases must use fresh disposable state and the project's service version
 `repo_setup.diagnostics` retains bounded tool timings/output and active commands
 on success or failure, locally only. It is separate from user-facing recipe notes.
 
+The optional global `[timeouts]` table overrides the budgets for individual
+pi prompts. `prompt_wall_clock` covers the entire turn, including model output
+and tool execution. `prompt_inactivity` counts from the last progress event,
+such as a text delta, tool update, or compaction event. PR notes use the
+separate `note_generation` wall-clock budget and honor an explicit
+`prompt_inactivity` too. Each key takes a positive integer in seconds, and
+the effective inactivity value must be lower than the effective prompt
+wall-clock value. The base values are 1800 seconds for wall clock and 600 for
+inactivity. Omitted keys keep each stage's existing limits, including the
+900-second note budget and prompts that previously had only a wall-clock limit.
+
+An explicit inactivity override also raises pi's HTTP header and body idle
+timeout to at least that many seconds. The provider's millisecond timer limits
+`prompt_inactivity` to 2147483 seconds. The preflight `/models` request has its
+own 10-second timeout. Sandbox commands and RPC recipe replay have their own
+limits. The nightly deadline controls when `run` stops starting repositories,
+independently of the per-turn deadlines. The startup log shows the global
+values and the local time of the supplied deadline.
+
 `Worker.ensure_build_setup` runs before the dependency-editing session. Pi reads
 `prompts/prepare.md`, explores the checkout, and reports setup and verification
 commands plus unmet prerequisites and checks requiring CI. This is discovery of
@@ -336,7 +355,7 @@ backticks. Prose fields continue to fold continuation lines into spaces.
 
 Cleanup must precede the final structured reply. A settled nonempty reply with
 missing/invalid fields gets one formatting-only recovery, shared across initial
-discovery and recipe repair, with a ten-minute absolute and five-minute
+discovery and recipe repair, with a default ten-minute absolute and five-minute
 inactivity limit: re-emitting a complete recipe can take minutes on a local
 model, and a timeout here discards an otherwise finished discovery. The sandbox extension
 removes active tools for this turn and rejects residual calls, so formatting cannot

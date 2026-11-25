@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from sadoc import sanitize, semver
-from sadoc.config import Config
+from sadoc.config import Config, load
 from sadoc.detect import Update
 from sadoc.gitops import Git
 from sadoc.pipeline import Worker
@@ -70,6 +70,7 @@ def project(tmp_path, monkeypatch):
 
         def __init__(self, **kwargs):
             self.allow_network = kwargs["allow_network"]
+            self.prompts["http_idle_timeout_s"] = kwargs["http_idle_timeout_s"]
 
         def start(self):
             pass
@@ -88,6 +89,7 @@ def project(tmp_path, monkeypatch):
             if "## Updates to apply" in text:
                 assert not kwargs.get("read_only")
                 self.events.append("bump")
+                self.prompts["bump_options"] = kwargs
                 (root / "package.json").write_text(
                     json.dumps({"dependencies": {u.name: f"^{u.latest}" for u in self.updates}})
                     + "\n"
@@ -99,6 +101,7 @@ def project(tmp_path, monkeypatch):
                 return TurnResult(text="NOTES: Replaced connect_sync with connect.", settled=True)
             self.events.append("prnote")
             self.prompts["prnote"] = text
+            self.prompts["prnote_options"] = kwargs
             return TurnResult(text="Updated widget to the requested version.", settled=True)
 
         def diagnostics(self):
@@ -146,6 +149,25 @@ def test_breaking_updates_are_assessed_before_bump_and_published(project, tier, 
     assert ASSESSMENT.strip() in project.state.pr_details("o/r", 7)["agent_notes"]
     assert current in project.session.prompts["impact"]
     assert latest in project.session.prompts["impact"]
+
+
+def test_configured_budgets_reach_update_and_note_sessions(project, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[timeouts]\nprompt_wall_clock = 5400\nprompt_inactivity = 900\nnote_generation = 1800\n"
+    )
+    project.worker.cfg.timeouts = load(path).timeouts
+    result = project.run("B", [update()])
+
+    assert result.status == "pr_opened", result.detail
+    assert project.session.prompts["http_idle_timeout_s"] == 900
+    assert project.session.prompts["impact_options"] == {
+        "read_only": True,
+        "timeout": 5400,
+        "idle_timeout": 900,
+    }
+    assert project.session.prompts["bump_options"] == {"timeout": 5400, "idle_timeout": 900}
+    assert project.session.prompts["prnote_options"] == {"timeout": 1800, "idle_timeout": 900}
 
 
 def test_mixed_groups_assess_only_breaking_members(project):

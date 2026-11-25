@@ -14,6 +14,10 @@ from pathlib import Path
 HOME = Path.home() / ".sadoc"
 DEFAULT_CONFIG = HOME / "config.toml"
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PROMPT_WALL_CLOCK = 1800
+DEFAULT_PROMPT_INACTIVITY = 600
+# Pi's provider request timer takes a signed 32-bit millisecond delay.
+MAX_PROMPT_INACTIVITY = (2**31 - 1) // 1000
 
 
 class ConfigError(Exception):
@@ -28,6 +32,22 @@ class ModelSpec:
     context: int = 262144
     max_tokens: int = 16384
     reasoning: bool = True
+
+
+@dataclass(frozen=True)
+class Timeouts:
+    # Omitted overrides let each prompt keep its existing budget.
+    prompt_wall_clock: int | None = None
+    prompt_inactivity: int | None = None
+    note_generation: int = 900
+
+    @property
+    def wall_clock(self) -> int:
+        return self.prompt_wall_clock or DEFAULT_PROMPT_WALL_CLOCK
+
+    @property
+    def inactivity(self) -> int:
+        return self.prompt_inactivity or DEFAULT_PROMPT_INACTIVITY
 
 
 @dataclass
@@ -95,6 +115,7 @@ class Config:
 
     # per-repo overrides: {"repo": {"verify": "...", "skip": bool, ...}}
     repos: dict[str, dict] = field(default_factory=dict)
+    timeouts: Timeouts = field(default_factory=Timeouts)
 
     @property
     def base_model(self) -> ModelSpec:
@@ -115,14 +136,36 @@ def _model_from(data: dict) -> ModelSpec:
     )
 
 
+def _timeouts_from(data: object) -> Timeouts:
+    if not isinstance(data, dict):
+        raise ConfigError("timeouts must be a TOML table")
+    values = {}
+    for key in ("prompt_wall_clock", "prompt_inactivity", "note_generation"):
+        if key in data:
+            value = data[key]
+            if type(value) is not int or value <= 0:
+                raise ConfigError(f"timeouts.{key} must be a positive integer (seconds)")
+            values[key] = value
+    limits = Timeouts(**values)
+    if limits.inactivity > MAX_PROMPT_INACTIVITY:
+        raise ConfigError(f"timeouts.prompt_inactivity must be at most {MAX_PROMPT_INACTIVITY}s")
+    if limits.inactivity >= limits.wall_clock:
+        raise ConfigError("timeouts.prompt_inactivity must be less than timeouts.prompt_wall_clock")
+    return limits
+
+
 def load(path: str | Path | None = None) -> Config:
     path = Path(path) if path else DEFAULT_CONFIG
     cfg = Config()
     if not path.exists():
         return cfg
-    with path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        with path.open("rb") as fh:
+            raw = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid TOML: {exc}") from exc
 
+    cfg.timeouts = _timeouts_from(raw.get("timeouts", {}))
     cfg.owner = raw.get("owner", cfg.owner)
     cfg.owners = list(raw.get("owners", []) or [])
     github = raw.get("github", {})
