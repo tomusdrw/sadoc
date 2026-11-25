@@ -54,6 +54,31 @@ Four things about this integration are not in the documentation:
 4. **The model id does not have to match the server.** Any string works as long
    as the endpoint is the only model it serves.
 
+### Reasoning effort
+
+For an endpoint whose chat template supports it, set `reasoning_effort` in
+`[model]` and override it in `[models.<task>]`. A task without an override
+inherits the global effort. A task table with only `reasoning_effort` uses the
+model and endpoint from `[model]`. Leaving both unset lets the server choose its
+default (0.9 for Inkling-2-Mini).
+
+Sadoc writes the configured value to `compat.chatTemplateKwargs` in the
+session's isolated `models.json`, with `thinkingFormat = "chat-template"`.
+Pi's OpenAI completions provider sends it as
+`chat_template_kwargs.reasoning_effort`. This requires a pi version that
+supports chat-template compatibility (verified with 1.6.0).
+Setting an effort enables pi's reasoning support for that session so the
+provider applies the chat-template options.
+The update pipeline starts a fresh session when the next phase needs a different
+effort and keeps earlier turns in the bounded local transcript. It reuses the
+session when the effort is the same. The run log records the selected effort
+with its repository and task.
+The digest lists the distinct task and effort combinations from the last 24 hours.
+
+Run `pytest tests/test_piworker.py -k sends_configured_reasoning_effort` with a
+compatible pi on `PATH` to verify the HTTP payload. The test runs a loopback
+catcher that replies with SSE, so it needs no model server or GitHub access.
+
 ---
 
 ## 3. The sandbox

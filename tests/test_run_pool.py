@@ -95,7 +95,7 @@ def run_command(tmp_path, monkeypatch, capsys):
             f'workdir = "{workdir}"\nagent_dir = "{agent_dir}"\n'
             f'report_dir = "{tmp_path / "reports"}"\ndisable_dependabot = false\n'
             f"{settings}\n"
-            '[models.bump]\nmodel = "mock-bump"\n'
+            '[models.bump]\nmodel = "mock-bump"\nreasoning_effort = "low"\n'
             + "\n".join(f'[repos."o/{name}"]\nverify = "true"' for name in repos)
         )
         monkeypatch.setattr(
@@ -146,6 +146,7 @@ def test_pool_dry_run_priority_repo_exclusion_and_failure(run_command, monkeypat
     class FakePi(PiSession):
         def start(self):
             self._write_models_json()
+            assert self.model.reasoning_effort == "low"
 
         def prompt(self, text, **kwargs):
             assert kwargs["timeout"] == 120

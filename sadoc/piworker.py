@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import policy
-from .config import DEFAULT_PROMPT_WALL_CLOCK
+from .config import DEFAULT_PROMPT_WALL_CLOCK, ModelSpec
 from .config import HOME as SADOC_HOME
 from .github_app import KEY_DIR, KEY_FD_ENV
 
@@ -116,6 +116,19 @@ class PiModel:
     context: int = 262144
     max_tokens: int = 16384
     reasoning: bool = True
+    reasoning_effort: int | float | str | None = None
+
+    @classmethod
+    def from_spec(cls, spec: ModelSpec, prefix: str = "depsbot") -> PiModel:
+        return cls(
+            name=f"{prefix}-{spec.provider}",
+            base_url=spec.base_url,
+            model=spec.model,
+            context=spec.context,
+            max_tokens=spec.max_tokens,
+            reasoning=spec.reasoning,
+            reasoning_effort=spec.reasoning_effort,
+        )
 
 
 class PiSession:
@@ -290,22 +303,28 @@ class PiSession:
         base = self.model.base_url.rstrip("/")
         if not base.endswith("/v1"):
             base += "/v1"
+        model = {
+            "id": self.model.model,
+            "name": self.model.model,
+            "contextWindow": self.model.context,
+            "maxTokens": self.model.max_tokens,
+            "input": ["text"],
+            "reasoning": self.model.reasoning,
+        }
+        if self.model.reasoning_effort is not None:
+            # Pi only applies chat-template thinking options to reasoning models.
+            model["reasoning"] = True
+            model["compat"] = {
+                "thinkingFormat": "chat-template",
+                "chatTemplateKwargs": {"reasoning_effort": self.model.reasoning_effort},
+            }
         payload = {
             "providers": {
                 self.model.name: {
                     "api": "openai-completions",
                     "apiKey": "none",
                     "baseUrl": base,
-                    "models": [
-                        {
-                            "id": self.model.model,
-                            "name": self.model.model,
-                            "contextWindow": self.model.context,
-                            "maxTokens": self.model.max_tokens,
-                            "input": ["text"],
-                            "reasoning": self.model.reasoning,
-                        }
-                    ],
+                    "models": [model],
                 }
             }
         }

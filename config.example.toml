@@ -100,9 +100,13 @@ base_url   = "http://127.0.0.1:8080/v1"
 context    = 131072
 max_tokens = 16384
 reasoning  = true
+# Optional chat-template effort for compatible endpoints such as Inkling-2-Mini.
+# Accepts 0 to 0.99, or "none", "minimal", "low", "medium", "high", "xhigh", "max".
 
 # Per-task overrides. "bump" edits manifests, "migrate" fixes breaking
 # changes, "fixci" fixes a failing CI run, "review" answers review comments.
+# Set reasoning_effort in a task table to override the global value.
+# Leaving it unset globally and for the task uses the server's default.
 # Optional "prepare" discovers project setup; when omitted it uses "bump".
 # Optional "diagnose" analyzes failure emails; when omitted it uses the base model.
 [models.bump]

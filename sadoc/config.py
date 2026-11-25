@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # Everything sadoc owns lives under one root: the configuration, the secrets,
@@ -32,6 +32,7 @@ class ModelSpec:
     context: int = 262144
     max_tokens: int = 16384
     reasoning: bool = True
+    reasoning_effort: int | float | str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,18 @@ class Config:
         return self.models.get("prepare") or self.model_for("bump")
 
 
-def _model_from(data: dict) -> ModelSpec:
+def _model_from(
+    data: dict, section: str, default_effort: int | float | str | None = None
+) -> ModelSpec:
+    effort = data.get("reasoning_effort", default_effort)
+    levels = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    if effort is not None and not (
+        (type(effort) in (int, float) and 0 <= effort <= 0.99) or effort in levels
+    ):
+        raise ConfigError(
+            f"[{section}] reasoning_effort must be a number from 0 to 0.99 "
+            f"or one of: {', '.join(levels)}"
+        )
     return ModelSpec(
         provider=data.get("provider", "local"),
         model=data.get("model", "local-model"),
@@ -140,6 +152,7 @@ def _model_from(data: dict) -> ModelSpec:
         context=int(data.get("context", 262144)),
         max_tokens=int(data.get("max_tokens", 16384)),
         reasoning=bool(data.get("reasoning", True)),
+        reasoning_effort=effort,
     )
 
 
@@ -261,9 +274,12 @@ def load(path: str | Path | None = None) -> Config:
         cfg.notify["enabled"] = False
 
     model_raw = raw.get("model", {})
-    cfg.default_model = _model_from(model_raw)
+    cfg.default_model = _model_from(model_raw, "model")
     for name, spec in (raw.get("models") or {}).items():
-        cfg.models[name] = _model_from(spec)
+        model = _model_from(spec, f"models.{name}", cfg.default_model.reasoning_effort)
+        if spec.keys() == {"reasoning_effort"}:
+            model = replace(cfg.default_model, reasoning_effort=model.reasoning_effort)
+        cfg.models[name] = model
     cfg.models.setdefault("base", cfg.default_model)
 
     cfg.repos = raw.get("repos", {}) or {}

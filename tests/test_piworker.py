@@ -2,7 +2,10 @@
 
 import json
 import os
+import shutil
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from unittest.mock import Mock
 
 import pytest
@@ -19,6 +22,82 @@ def session_with_events(tmp_path, *events):
     for event in events:
         session._events.put(event)
     return session
+
+
+@pytest.mark.parametrize("effort", [None, 0, 0.9, "low"])
+@pytest.mark.parametrize("reasoning", [False, True])
+def test_configures_chat_template_kwargs_only_when_set(tmp_path, effort, reasoning):
+    model = PiModel(
+        "test", "http://localhost:1", "test", reasoning=reasoning, reasoning_effort=effort
+    )
+    session = PiSession(tmp_path, model, tmp_path)
+    session._write_models_json()
+    spec = json.loads((tmp_path / "models.json").read_text())["providers"]["test"]["models"][0]
+    assert spec["reasoning"] == (reasoning or effort is not None)
+    if effort is None:
+        assert "compat" not in spec
+    else:
+        assert spec["compat"] == {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {"reasoning_effort": effort},
+        }
+
+
+@pytest.mark.parametrize("effort", [None, 0, "low"])
+def test_pi_sends_configured_reasoning_effort(tmp_path, monkeypatch, effort):
+    if not shutil.which("pi"):
+        pytest.skip("pi is needed for the provider request smoke test")
+    monkeypatch.setenv("PI_OFFLINE", "1")
+    requests = []
+
+    class Catcher(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for delta, finish in [({"content": "OK"}, None), ({}, "stop")]:
+                chunk = {
+                    "id": "fixture",
+                    "object": "chat.completion.chunk",
+                    "model": "test-model",
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                }
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Catcher) as server:
+        path = tmp_path / "config.toml"
+        config = (
+            '[model]\nmodel = "test-model"\nreasoning = false\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n'
+        )
+        if effort is not None:
+            config += f"[models.fixci]\nreasoning_effort = {json.dumps(effort)}\n"
+        path.write_text(config)
+        session = PiSession(
+            tmp_path,
+            PiModel.from_spec(load(path).model_for("fixci")),
+            tmp_path / "agent",
+            extra_args=["--no-skills", "--no-mcp", "--no-context-files", "--no-tools"],
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            session.start()
+            assert session.prompt("Reply OK.", timeout=20).text == "OK"
+        finally:
+            session.close()
+            server.shutdown()
+            thread.join()
+
+    [(route, body)] = requests
+    assert route == "/v1/chat/completions"
+    if effort is None:
+        assert "chat_template_kwargs" not in body
+    else:
+        assert body["chat_template_kwargs"] == {"reasoning_effort": effort}
 
 
 def test_provider_error_is_not_an_empty_success(tmp_path):
