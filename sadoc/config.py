@@ -127,6 +127,10 @@ class Config:
     def model_for(self, task: str) -> ModelSpec:
         return self.models.get(task, self.base_model)
 
+    @property
+    def discovery_model(self) -> ModelSpec:
+        return self.models.get("prepare") or self.model_for("bump")
+
 
 def _model_from(data: dict) -> ModelSpec:
     return ModelSpec(

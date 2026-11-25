@@ -201,6 +201,15 @@ class JobResult:
     ci_state: str = ""
 
 
+@dataclass
+class JobProgress:
+    """State needed by the pool if a job exits before returning a result."""
+
+    attempt_id: int | None = None
+    pr_submitted: bool = False
+    pr_url: str = ""
+
+
 # ------------------------------------------------------------------ helpers
 def tier_for(update: Update, security: bool) -> str:
     if security:
@@ -248,7 +257,7 @@ class Worker:
         self.notifier = notifier
         self._pool_checkout = None
         self._session_suffix = ""
-        self._on_pr_submit = None
+        self._job_progress: JobProgress | None = None
         self.persona = persona.load(getattr(cfg, "persona", None))
         self.adv_cache = advisories.AdvisoryCache(gh)
         self._setup_attempts: dict[tuple[str, str], dict] = {}
@@ -728,7 +737,7 @@ class Worker:
                     ).strip()
             return result
         original_commit = git.commit_sha()
-        model = self.cfg.models.get("prepare") or self.cfg.model_for("bump")
+        model = self.cfg.discovery_model
         spec = PiModel(
             name=f"depsbot-{model.provider}",
             base_url=model.base_url,
@@ -1515,6 +1524,8 @@ class Worker:
         breaking_updates = [u for u in updates if u.bump_kind == "major"]
 
         attempt_id = self.state.start_attempt(f"{owner}/{repo}", f"tier_{tier.lower()}")
+        if self._job_progress is not None:
+            self._job_progress.attempt_id = attempt_id
         self.state.log(
             f"processing {owner}/{repo} tier {tier} ({len(updates)} updates)",
             repo=f"{owner}/{repo}",
@@ -1900,10 +1911,12 @@ class Worker:
                     body = self.pr_body(
                         updates, f"{owner}/{repo}", tier, public_note, ref_id, impact
                     )
-                    if self._on_pr_submit:
-                        self._on_pr_submit()
+                    if self._job_progress is not None:
+                        self._job_progress.pr_submitted = True
                     pr = self.gh.open_pr(owner, repo, title, body, branch, default_branch)
                     url = pr.get("url", "")
+                    if self._job_progress is not None:
+                        self._job_progress.pr_url = url
                     number = self._pr_number(url)
                     result.status = "pr_opened"
                     result.pr_number = number

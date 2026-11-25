@@ -302,11 +302,16 @@ def test_session_environments_have_unique_container_ownership(tmp_path):
     assert a._build_env()["SADOC_SESSION_ID"] != b._build_env()["SADOC_SESSION_ID"]
 
 
-def test_forced_close_removes_only_owned_containers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", ["", "w2"])
+def test_forced_close_removes_only_owned_containers(tmp_path, monkeypatch, suffix):
     import subprocess
 
     session = PiSession(
-        tmp_path, PiModel("test", "http://localhost:1", "test"), tmp_path, allow_containers=True
+        tmp_path,
+        PiModel("test", "http://localhost:1", "test"),
+        tmp_path,
+        allow_containers=True,
+        session_suffix=suffix,
     )
     session._proc = Mock()
     session._proc.wait.side_effect = [subprocess.TimeoutExpired("pi", 20), None]
@@ -315,7 +320,9 @@ def test_forced_close_removes_only_owned_containers(tmp_path, monkeypatch):
     def runtime(argv, **kwargs):
         calls.append(argv)
         if "ps" in argv:
-            assert f"label=io.sadoc.session={session._build_env()['SADOC_SESSION_ID']}" in argv
+            session_id = session._build_env()["SADOC_SESSION_ID"]
+            assert session_id.partition("-")[2] == suffix
+            assert f"label=io.sadoc.session={session_id}" in argv
             return subprocess.CompletedProcess(argv, 0, "abc123\n", "")
         assert argv == ["podman", "rm", "--force", "--volumes", "abc123"]
         return subprocess.CompletedProcess(argv, 0, "", "")

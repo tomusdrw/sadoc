@@ -23,7 +23,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -377,9 +377,17 @@ export function startContainerHelper(): void {
 	mkdirSync(join(CONTAINER_DIR, "data"), { recursive: true });
 	mkdirSync(CONTAINER_RUN, { recursive: true });
 	mkdirSync(CONTAINER_BIN, { recursive: true });
-	const shim = join(CONTAINER_BIN, RUNTIME);
-	writeFileSync(shim, SHIM, { mode: 0o755 });
-	chmodSync(shim, 0o755);
+	// Another session can execute the shared shim during startup. Publish a
+	// complete executable in one rename instead of truncating it in place.
+	const staging = mkdtempSync(join(CONTAINER_BIN, ".shim-"));
+	try {
+		const shim = join(staging, RUNTIME);
+		writeFileSync(shim, SHIM, { mode: 0o755 });
+		chmodSync(shim, 0o755);
+		renameSync(shim, join(CONTAINER_BIN, RUNTIME));
+	} finally {
+		rmSync(staging, { recursive: true, force: true });
+	}
 	if (existsSync(CONTAINER_SOCKET)) {
 		unlinkSync(CONTAINER_SOCKET);
 	}

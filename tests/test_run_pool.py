@@ -3,6 +3,7 @@
 import json
 import sys
 from contextlib import closing
+from http.client import IncompleteRead
 from io import BytesIO
 from pathlib import Path
 from threading import Barrier, Event, Lock
@@ -68,7 +69,7 @@ def run_command(tmp_path, monkeypatch, capsys):
     workdir = tmp_path / "work"
     agent_dir = tmp_path / "agent"
 
-    def run(repos, *, settings="[run]\nworkers = 2", dry_run=False):
+    def run(repos, *, settings="[run]\nworkers = 2", dry_run=False, max_prs=None):
         entries = [{"owner": "o", "name": name, "repo": f"o/{name}"} for name in repos]
         monkeypatch.setattr(cli.detect, "resolve_scope", lambda *_: entries)
 
@@ -109,6 +110,7 @@ def run_command(tmp_path, monkeypatch, capsys):
                 *(["--dry-run"] if dry_run else []),
                 "run",
                 "--json",
+                *([] if max_prs is None else ["--max-prs", str(max_prs)]),
             ],
         )
         rc = cli.main()
@@ -145,6 +147,8 @@ def test_pool_dry_run_priority_repo_exclusion_and_failure(run_command, monkeypat
             self._write_models_json()
 
         def prompt(self, text, **kwargs):
+            assert kwargs["timeout"] == 120
+            assert kwargs["idle_timeout"] == 30
             repo = self.cwd.rsplit("__", 1)[1]
             [name] = [name for name in ("one", "two") if f"| `{name}` |" in text]
             self.job = (repo, name)
@@ -179,7 +183,11 @@ def test_pool_dry_run_priority_repo_exclusion_and_failure(run_command, monkeypat
 
     monkeypatch.setattr(Git, "clone", clone)
     monkeypatch.setattr("sadoc.pipeline.PiSession", FakePi)
-    rc, logs, results = run({"b": ["one"], "a": ["one", "two"], "c": ["one"]}, dry_run=True)
+    rc, logs, results = run(
+        {"b": ["one"], "a": ["one", "two"], "c": ["one"]},
+        settings="[run]\nworkers = 2\n[timeouts]\nprompt_wall_clock = 120\nprompt_inactivity = 30",
+        dry_run=True,
+    )
     assert rc == 0
     assert [(r["repo"], r["status"]) for r in results] == [
         ("o/a", "failed"),
@@ -207,8 +215,9 @@ def test_pool_dry_run_priority_repo_exclusion_and_failure(run_command, monkeypat
         assert "mock provider timed out" in report.build(state)
 
 
-def test_pool_budget_counts_submission_even_if_the_job_raises(run_command, monkeypatch):
-    run, _, _, _ = run_command
+@pytest.mark.parametrize("max_prs", [None, 8])
+def test_pool_budget_counts_submission_even_if_the_job_raises(run_command, monkeypatch, max_prs):
+    run, _, db, _ = run_command
     lock = Lock()
     started = []
     first_pair = Barrier(2, timeout=5)
@@ -220,18 +229,37 @@ def test_pool_budget_counts_submission_even_if_the_job_raises(run_command, monke
             first_pair.wait()
         if repo == "a":
             raise TimeoutError("failed before submitting a PR")
-        worker._on_pr_submit()
+        worker._job_progress.pr_submitted = True
         if repo == "b":
+            worker._job_progress.attempt_id = worker.state.start_attempt("o/b", "tier_a")
             raise TimeoutError("GitHub response lost")
         return JobResult(repo=f"{owner}/{repo}", tier=tier, status="pr_opened")
 
     monkeypatch.setattr(Worker, "process_repo", process)
-    rc, logs, results = run({name: ["one"] for name in "abcdefgh"})
+    rc, logs, results = run({name: ["one"] for name in "abcdefgh"}, max_prs=max_prs)
     assert rc == 0
     assert sorted(started) == list("abcdef")
     assert [result["status"] for result in results] == ["failed", "failed"] + ["pr_opened"] * 4
     assert "PR budget reached, stopping" in logs
     assert "opened 4 PR(s)" in logs
+    with closing(State(db)) as state:
+        assert [
+            tuple(row)
+            for row in state.conn.execute("SELECT repo, status FROM attempts ORDER BY repo")
+        ] == [("o/a", "failed"), ("o/b", "failed")]
+
+
+def test_pool_records_an_overlap_lookup_failure(run_command, monkeypatch):
+    run, gh, db, _ = run_command
+    gh.pr_list.side_effect = TimeoutError("GitHub lookup timed out")
+    monkeypatch.setattr(Worker, "process_repo", Mock(side_effect=AssertionError("must skip")))
+    rc, _, results = run({"a": ["one"]})
+    assert rc == 0
+    assert [result["status"] for result in results] == ["failed"]
+    assert "could not verify open PR file overlap" in results[0]["detail"]
+    Worker.process_repo.assert_not_called()
+    with closing(State(db)) as state:
+        assert "GitHub lookup timed out" in report.build(state)
 
 
 def test_one_worker_uses_legacy_order_and_logs(run_command, monkeypatch):
@@ -253,6 +281,7 @@ def test_one_worker_uses_legacy_order_and_logs(run_command, monkeypatch):
     assert rc == 0
     assert [r["detail"] for r in results] == ["one", "two", "one"]
     assert logs.splitlines() == [
+        "[01:00:00] limits: wall=1800s inactivity=600s note=900s deadline=none",
         "[01:00:00] 2 repos have outdated dependencies",
         "[01:00:00] o/a: priority 2, 2 group(s)",
         "[01:00:00] --- o/a tier A: 1 updates (one/package.json)",
@@ -294,3 +323,24 @@ def test_model_slots_reads_llama_props(monkeypatch, props, slots):
     monkeypatch.setattr("urllib.request.urlopen", request)
     assert cli._model_slots("http://localhost:8094/v1/") == slots
     request.assert_called_once_with("http://localhost:8094/props", timeout=10)
+
+
+def test_slot_probe_accepts_truncated_response_as_unknown(monkeypatch):
+    response = BytesIO()
+    monkeypatch.setattr(response, "read", Mock(side_effect=IncompleteRead(b"")))
+    monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response))
+    assert cli._model_slots("http://localhost:8094/v1") is None
+
+
+def test_strict_run_ignores_monitor_endpoints(run_command, monkeypatch):
+    run, _, _, _ = run_command
+    probe = Mock(side_effect=lambda url: 2 if url.endswith(":8080") else 1)
+    monkeypatch.setattr(cli, "_model_slots", probe)
+    rc, _, _ = run(
+        {},
+        settings="[run]\nworkers = 2\nrequire_slots = true\n"
+        '[models.review]\nbase_url = "http://localhost:8090/v1"\n'
+        '[models.fixci]\nbase_url = "http://localhost:8091/v1"\n',
+    )
+    assert rc == 0
+    probe.assert_called_once_with("http://127.0.0.1:8080")
