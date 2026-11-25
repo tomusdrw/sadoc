@@ -68,6 +68,9 @@ class Config:
     max_attempts: int = 3
     max_repos_per_night: int = 0  # 0 = unlimited (bounded by max_prs_per_night)
 
+    run_workers: int = 1
+    run_require_slots: bool = False
+
     # scope
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
@@ -124,6 +127,10 @@ class Config:
 
     def model_for(self, task: str) -> ModelSpec:
         return self.models.get(task, self.base_model)
+
+    @property
+    def discovery_model(self) -> ModelSpec:
+        return self.models.get("prepare") or self.model_for("bump")
 
 
 def _model_from(
@@ -205,6 +212,18 @@ def load(path: str | Path | None = None) -> Config:
     cfg.max_prs_per_night = int(sched.get("max_prs_per_night", cfg.max_prs_per_night))
     cfg.max_attempts = int(sched.get("max_attempts", cfg.max_attempts))
     cfg.max_repos_per_night = int(sched.get("max_repos_per_night", 0))
+
+    run = raw.get("run", {})
+    if not isinstance(run, dict):
+        raise ConfigError("run must be a table")
+    workers = run.get("workers", cfg.run_workers)
+    if type(workers) is not int or not 1 <= workers <= 3:
+        raise ConfigError("run.workers must be an integer from 1 to 3")
+    require_slots = run.get("require_slots", cfg.run_require_slots)
+    if type(require_slots) is not bool:
+        raise ConfigError("run.require_slots must be a boolean")
+    cfg.run_workers = workers
+    cfg.run_require_slots = require_slots
 
     scope = raw.get("scope", {})
     cfg.include = list(scope.get("include", []))

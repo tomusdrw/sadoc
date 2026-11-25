@@ -17,7 +17,14 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import closing
+from copy import copy
+from dataclasses import replace
+from http.client import HTTPException
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import BoundedSemaphore, Lock
 
 if __package__ in (None, ""):  # running as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,7 +35,7 @@ from sadoc import detect, ecosystems, pipeline, release_check, workspaces  # noq
 from sadoc.config import ModelSpec  # noqa: E402
 from sadoc.gh import Gh, GhError  # noqa: E402
 from sadoc.github_app import GitHubApp, GitHubAppError, protect_key_descriptor  # noqa: E402
-from sadoc.notify import Notifier, NotifyError, build_backend  # noqa: E402
+from sadoc.notify import ConsoleBackend, Notifier, NotifyError, NullBackend, build_backend  # noqa: E402
 from sadoc.piworker import PiError, container_runtime_command  # noqa: E402
 from sadoc.state import State  # noqa: E402
 
@@ -42,7 +49,7 @@ def _log(msg: str, repo: str | None = None, level: str = "info", data: dict | No
     print(f"{prefix} {msg}", flush=True)
 
 
-def _make_notifier(cfg, state, dry_run: bool):
+def _make_notifier(cfg, state, dry_run: bool, *, log=None):
     """Build the notifier. Returns None when notifications are off."""
     ncfg = cfg.notify
     if not ncfg.get("enabled", False):
@@ -52,8 +59,10 @@ def _make_notifier(cfg, state, dry_run: bool):
         backend_name = "console"
     try:
         backend = build_backend({**ncfg, "backend": backend_name})
+        if log is not None and isinstance(backend, ConsoleBackend):
+            backend = ConsoleBackend(write=log)
     except NotifyError as exc:
-        _log(f"notifications disabled: {exc}")
+        (log or _log)(f"notifications disabled: {exc}")
         return None
     to = ncfg.get("to") or []
     if isinstance(to, str):
@@ -111,11 +120,12 @@ def _model_reachable(base_url: str) -> bool:
         return False
 
 
-def _check_models(cfg) -> bool:
+def _check_models(cfg, models=None) -> bool:
     """Every model the run might use must be reachable."""
+    if models is None:
+        models = [cfg.model_for(task) for task in ("bump", "migrate", "prepare", "fixci", "review")]
     seen: dict[str, ModelSpec] = {}
-    for task in ("bump", "migrate", "prepare", "fixci", "review"):
-        model = cfg.model_for(task)
+    for model in models:
         seen[model.base_url] = model
     for base_url, model in seen.items():
         if not _model_reachable(base_url):
@@ -123,6 +133,43 @@ def _check_models(cfg) -> bool:
             _log("start it, or point the config at one that is running")
             return False
     return True
+
+
+def _model_slots(base_url: str) -> int | None:
+    import urllib.request
+
+    url = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        with urllib.request.urlopen(f"{url}/props", timeout=10) as response:
+            props = json.load(response)
+    except (HTTPException, OSError, ValueError):
+        return None
+    slots = props.get("total_slots") if isinstance(props, dict) else None
+    return slots if type(slots) is int and slots > 0 else None
+
+
+def _check_model_slots(cfg, models) -> bool:
+    seen = set()
+    ready = True
+    for model in models:
+        endpoint = model.base_url.rstrip("/").removesuffix("/v1")
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        slots = _model_slots(endpoint)
+        if slots is not None and slots >= cfg.run_workers:
+            continue
+        detail = (
+            "the server did not report its slot count"
+            if slots is None
+            else f"the server has {slots} slot(s)"
+        )
+        _log(
+            f"{endpoint}: run.workers={cfg.run_workers}, {detail}",
+            level="error" if cfg.run_require_slots else "warning",
+        )
+        ready = False
+    return ready or not cfg.run_require_slots
 
 
 # ------------------------------------------------------------------- scan
@@ -195,6 +242,134 @@ def cmd_scope(args, cfg, gh, state) -> int:
 
 
 # -------------------------------------------------------------------- run
+def _run_group(worker, entry, group, log):
+    owner, name, repo = entry["owner"], entry["name"], entry["repo"]
+    try:
+        existing = worker.overlapping_pr(owner, name, group)
+    except Exception as exc:  # noqa: BLE001
+        detail = f"{repo}: could not verify open PR file overlap ({exc})"
+        if worker._job_progress is not None:
+            raise RuntimeError(detail) from exc
+        log(detail)
+        return None
+    if existing:
+        log(f"{repo}: skipping group, PR #{existing.get('number')} reserves its files")
+        return None
+    log(
+        f"--- {repo} tier {group.tier}: {len(group.updates)} updates "
+        f"({', '.join(group.manifests[:4])})"
+    )
+    result = worker.process_repo(owner, name, group.tier, group.updates, group=group)
+    log(f"    -> {result.status} {result.detail or result.pr_url}")
+    return result
+
+
+def _run_pool(coordinator, candidates, budget, deadline):
+    cfg = coordinator.cfg
+    jobs = [
+        (f"{entry['owner']}/{entry['name']}".casefold(), entry, group)
+        for _, entry, groups in candidates
+        for group in groups
+        if (group.tier != pipeline.TIER_B or cfg.tier_b_major)
+        and (group.tier != pipeline.TIER_C or cfg.tier_c_security)
+    ]
+    if not jobs:
+        return []
+
+    # A reservation is held from dispatch until the group returns. A submitted
+    # PR consumes it even when GitHub's response is lost or CI follow-up fails.
+    reservations = BoundedSemaphore(max(0, min(budget, 5)))
+    pending = dict(enumerate(jobs))
+    available = set(range(1, cfg.run_workers + 1))
+    active_repos = set()
+    running = {}
+    results = {}
+    log_lock = Lock()
+
+    def worker_log(slot, msg, *args, **kwargs):
+        with log_lock:
+            for line in msg.splitlines() or [""]:
+                _log(f"[w{slot}] {line}", *args, **kwargs)
+
+    def execute(slot, entry, group, progress):
+        def log(msg, *args, **kwargs):
+            worker_log(slot, msg, *args, **kwargs)
+
+        with closing(State(coordinator.state.path, worker=True)) as state:
+            # Keep the recipe cache for the entire run. Its entries are
+            # repository-scoped and only one job owns a repository at a time.
+            worker = copy(coordinator)
+            worker.cfg = replace(cfg, agent_dir=Path(agent_root) / f"w{slot}")
+            worker.state = state
+            worker.log = log
+            worker.notifier = _make_notifier(cfg, state, cfg.dry_run, log=log)
+            worker._pool_checkout = checkout
+            worker._session_suffix = f"w{slot}"
+            worker._job_progress = progress
+            return _run_group(worker, entry, group, log)
+
+    cfg.agent_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        workspaces.pool_checkouts(cfg.workdir) as checkout,
+        TemporaryDirectory(prefix="pool-", dir=cfg.agent_dir) as agent_root,
+        ThreadPoolExecutor(max_workers=cfg.run_workers) as pool,
+    ):
+        while pending or running:
+            past_deadline = deadline and time.time() >= deadline
+            if available and not past_deadline:
+                index = next(
+                    (index for index, (repo, _, _) in pending.items() if repo not in active_repos),
+                    None,
+                )
+                if index is not None and reservations.acquire(blocking=False):
+                    repo, entry, group = pending.pop(index)
+                    slot = min(available)
+                    available.remove(slot)
+                    active_repos.add(repo)
+                    progress = pipeline.JobProgress()
+                    future = pool.submit(execute, slot, entry, group, progress)
+                    running[future] = (slot, index, repo, progress)
+                    continue
+            if not running:
+                _log(
+                    "past the deadline for tonight, stopping"
+                    if past_deadline
+                    else "PR budget reached, stopping"
+                )
+                break
+            finished, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in sorted(finished, key=lambda f: running[f][0]):
+                slot, index, repo, progress = running.pop(future)
+                available.add(slot)
+                active_repos.remove(repo)
+                if not progress.pr_submitted:
+                    reservations.release()
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    _, entry, group = jobs[index]
+                    detail = f"{type(exc).__name__}: {exc}"[:500]
+                    worker_log(slot, f"    -> failed {detail}", repo=entry["repo"], level="error")
+                    result = pipeline.JobResult(
+                        entry["repo"], group.tier, "failed", pr_url=progress.pr_url, detail=detail
+                    )
+                    try:
+                        with closing(State(coordinator.state.path, worker=True)) as state:
+                            attempt = progress.attempt_id
+                            if attempt is None:
+                                attempt = state.start_attempt(
+                                    result.repo, f"tier_{result.tier.lower()}"
+                                )
+                            state.end_attempt(attempt, "failed", detail)
+                    except Exception as db_error:  # noqa: BLE001
+                        worker_log(
+                            slot, f"could not record failed attempt: {db_error}", level="error"
+                        )
+                if result is not None:
+                    results[index] = result
+    return [results[index] for index in sorted(results)]
+
+
 def cmd_run(args, cfg, gh, state) -> int:
     deadline = getattr(args, "deadline", None)
     try:
@@ -209,6 +384,19 @@ def cmd_run(args, cfg, gh, state) -> int:
     worker = pipeline.Worker(
         cfg, gh, state, log=_log, notifier=_make_notifier(cfg, state, cfg.dry_run)
     )
+    models = None
+    if cfg.run_workers > 1:
+        models = [cfg.model_for("bump"), cfg.model_for("migrate"), cfg.discovery_model]
+        slot_models = models
+        if (
+            worker.notifier
+            and not cfg.dry_run
+            and not isinstance(worker.notifier.backend, NullBackend)
+        ):
+            slot_models = [*models, cfg.model_for("diagnose")]
+        if not _check_model_slots(cfg, slot_models):
+            _log("not starting: the model slot requirement is not met")
+            return 1
     scoped = detect.resolve_scope(cfg, gh, state)
     if args.repo:
         scoped = [s for s in scoped if s["name"] == args.repo]
@@ -245,11 +433,21 @@ def cmd_run(args, cfg, gh, state) -> int:
     candidates.sort(key=lambda x: -x[0])
     _log(f"{len(candidates)} repos have outdated dependencies")
 
-    if not _check_models(cfg):
+    models_ready = _check_models(cfg) if models is None else _check_models(cfg, models)
+    if not models_ready:
         _log("not starting: the model is not answering")
         return 1
 
     budget = args.max_prs if args.max_prs is not None else cfg.max_prs_per_night
+    if cfg.run_workers > 1:
+        try:
+            results = _run_pool(worker, candidates, budget, deadline)
+        except (OSError, workspaces.WorkspaceError) as exc:
+            _log(f"parallel run could not use its work directories: {exc}", level="error")
+            return 1
+        opened = sum(result.status == "pr_opened" or bool(result.pr_url) for result in results)
+        return _report_run(args, opened, results)
+
     opened = 0
     results = []
     for priority, entry, groups in candidates:
@@ -268,25 +466,16 @@ def cmd_run(args, cfg, gh, state) -> int:
                 continue
             if group.tier == pipeline.TIER_C and not cfg.tier_c_security:
                 continue
-            try:
-                existing = worker.overlapping_pr(entry["owner"], entry["name"], group)
-            except Exception as exc:  # noqa: BLE001
-                _log(f"{repo}: could not verify open PR file overlap ({exc})")
+            res = _run_group(worker, entry, group, _log)
+            if res is None:
                 continue
-            if existing:
-                _log(f"{repo}: skipping group, PR #{existing.get('number')} reserves its files")
-                continue
-            _log(
-                f"--- {repo} tier {group.tier}: {len(group.updates)} updates "
-                f"({', '.join(group.manifests[:4])})"
-            )
-            res = worker.process_repo(
-                entry["owner"], entry["name"], group.tier, group.updates, group=group
-            )
             results.append(res)
-            _log(f"    -> {res.status} {res.detail or res.pr_url}")
             if res.status == "pr_opened":
                 opened += 1
+    return _report_run(args, opened, results)
+
+
+def _report_run(args, opened, results):
     _log(f"opened {opened} PR(s)")
     if args.json:
         print(json.dumps([r.__dict__ for r in results], indent=2, default=str))

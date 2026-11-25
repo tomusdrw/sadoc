@@ -578,7 +578,8 @@ An advisory lock on `workdir/.sadoc-work.lock` covers recovery and each checkout
 whole lifetime. It is nonblocking: overlapping jobs get an explicit busy error.
 The lock file remains to avoid an inode replacement race. All managed leftovers,
 including partial clones without Git metadata, are reclaimed under that lock
-before another checkout. CLI `run`, `monitor` and `doctor` also recover before
+before another sequential checkout or before the parallel pool starts. CLI
+`run`, `monitor` and `doctor` also recover before
 scoping or checking models, so recovery does not depend on revisiting a repository.
 A SIGKILL or power loss cannot run `finally`; the next invocation does recovery.
 
@@ -592,6 +593,29 @@ Package caches, installed toolchains and container images remain persistent.
 Logs, reports and the SQLite history also have independent lifetimes. Checkout
 cleanup provides no global cache eviction or disk quota. Sandbox scratch files
 already live on per-command tmpfs; they need no host-directory sweep.
+
+## Parallel dependency updates
+
+With `[run] workers` above one, the dispatcher starts the first eligible group
+in priority order whenever a worker becomes available. It holds the workdir lock
+until all workers finish and keeps a repository reserved through checkout
+cleanup. A busy repository's subsequent groups stay queued. The deadline stops
+new assignments, and active workers finish their current groups. The scheduler
+keeps queue priority among eligible groups. Worker assignment depends on which
+slot becomes free, while `run --json` presents completed results in queue order.
+
+The dispatcher reserves one PR slot per active group under a semaphore. An
+attempted GitHub PR submission consumes the slot even if the response is lost.
+Groups that finish before submitting a PR return their reservation. Each job
+opens its own SQLite connection, using `BEGIN IMMEDIATE` with a 30-second busy
+timeout for writes. The coordinator initializes the database before dispatch.
+Failures are recorded in the same attempts table that feeds the nightly digest.
+Any database change added to the worker path must go through `State.tx()`
+to acquire the SQLite writer lock before the transaction touches any data.
+
+Each worker writes pi's model and settings files to its own agent directory
+using the model configured for the current task. Podman cleanup filters by the
+full session label, which includes the random session ID and the worker suffix.
 
 ## Coordinated toolchain proposals
 

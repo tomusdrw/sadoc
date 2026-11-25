@@ -201,6 +201,15 @@ class JobResult:
     ci_state: str = ""
 
 
+@dataclass
+class JobProgress:
+    """State needed by the pool if a job exits before returning a result."""
+
+    attempt_id: int | None = None
+    pr_submitted: bool = False
+    pr_url: str = ""
+
+
 # ------------------------------------------------------------------ helpers
 def tier_for(update: Update, security: bool) -> str:
     if security:
@@ -246,6 +255,9 @@ class Worker:
         self.state = state
         self.log = log or _default_log
         self.notifier = notifier
+        self._pool_checkout = None
+        self._session_suffix = ""
+        self._job_progress: JobProgress | None = None
         self.persona = persona.load(getattr(cfg, "persona", None))
         self.adv_cache = advisories.AdvisoryCache(gh)
         self._setup_attempts: dict[tuple[str, str], dict] = {}
@@ -264,6 +276,11 @@ class Worker:
         if limits.prompt_inactivity is not None:
             options["idle_timeout"] = limits.prompt_inactivity
         return session.prompt(message, **options)
+
+    def _pi_session(self, **kwargs) -> PiSession:
+        if self._session_suffix:
+            kwargs["session_suffix"] = self._session_suffix
+        return PiSession(**kwargs)
 
     def _notify_secret_names(self) -> list[str]:
         """Environment variables that hold notification secrets."""
@@ -307,7 +324,7 @@ class Worker:
         )
         try:
             with TemporaryDirectory(prefix="sadoc-diagnose-") as cwd:
-                session = PiSession(
+                session = self._pi_session(
                     cwd=cwd,
                     model=spec,
                     agent_dir=self.cfg.agent_dir,
@@ -475,7 +492,12 @@ class Worker:
 
     @contextmanager
     def prepare_clone(self, owner: str, repo: str, branch: str) -> Iterator[Git]:
-        with workspaces.checkout(self.cfg.workdir, owner, repo) as dest:
+        checkout = (
+            self._pool_checkout(owner, repo)
+            if self._pool_checkout
+            else workspaces.checkout(self.cfg.workdir, owner, repo)
+        )
+        with checkout as dest:
             url = f"https://github.com/{owner}/{repo}.git"
             if self.cfg.github_app_id:
                 # App-authenticated Git never follows the checkout's .git pointer.
@@ -715,9 +737,8 @@ class Worker:
                     ).strip()
             return result
         original_commit = git.commit_sha()
-        model = self.cfg.models.get("prepare") or self.cfg.model_for("bump")
-        spec = PiModel.from_spec(model)
-        session = PiSession(
+        spec = PiModel.from_spec(self.cfg.discovery_model)
+        session = self._pi_session(
             cwd=git.path,
             model=spec,
             agent_dir=self.cfg.agent_dir,
@@ -1490,6 +1511,8 @@ class Worker:
         breaking_updates = [u for u in updates if u.bump_kind == "major"]
 
         attempt_id = self.state.start_attempt(f"{owner}/{repo}", f"tier_{tier.lower()}")
+        if self._job_progress is not None:
+            self._job_progress.attempt_id = attempt_id
         self.state.log(
             f"processing {owner}/{repo} tier {tier} ({len(updates)} updates)",
             repo=f"{owner}/{repo}",
@@ -1519,7 +1542,7 @@ class Worker:
 
                 def new_session() -> PiSession:
                     self._log_reasoning_effort(spec, result.repo, task)
-                    return PiSession(
+                    return self._pi_session(
                         cwd=git.path,
                         model=spec,
                         agent_dir=self.cfg.agent_dir,
@@ -1889,8 +1912,12 @@ class Worker:
                     body = self.pr_body(
                         updates, f"{owner}/{repo}", tier, public_note, ref_id, impact
                     )
+                    if self._job_progress is not None:
+                        self._job_progress.pr_submitted = True
                     pr = self.gh.open_pr(owner, repo, title, body, branch, default_branch)
                     url = pr.get("url", "")
+                    if self._job_progress is not None:
+                        self._job_progress.pr_url = url
                     number = self._pr_number(url)
                     result.status = "pr_opened"
                     result.pr_number = number

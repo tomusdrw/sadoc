@@ -39,6 +39,15 @@ max_repos_per_night = 0
 # prompt_inactivity = 900
 # note_generation   = 1800
 
+[run]
+# 1 preserves serial execution. Try 2 after deploying reasoning_effort and
+# [timeouts] and measuring their effect over one or two nightly runs.
+# Accepted values are 1–3.
+workers = 1
+# With multiple workers, abort if a model endpoint reports too few slots or
+# cannot report its capacity. By default, Sadoc logs a warning and proceeds.
+require_slots = false
+
 [scope]
 # Repos to include even when policy would skip them (forks, other owners).
 include = []
