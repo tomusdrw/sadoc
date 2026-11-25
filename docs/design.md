@@ -575,7 +575,9 @@ With `[run] workers` above one, the dispatcher starts the first eligible group
 in priority order whenever a worker becomes available. It holds the workdir lock
 until all workers finish and keeps a repository reserved through checkout
 cleanup. A busy repository's subsequent groups stay queued. The deadline stops
-new assignments, and `run --json` presents completed results in queue order.
+new assignments, and active workers finish their current groups. The scheduler
+keeps queue priority among eligible groups. Worker assignment depends on which
+slot becomes free, while `run --json` presents completed results in queue order.
 
 The dispatcher reserves one PR slot per active group under a semaphore. An
 attempted GitHub PR submission consumes the slot even if the response is lost.
@@ -583,6 +585,8 @@ Groups that finish before submitting a PR return their reservation. Each job
 opens its own SQLite connection, using `BEGIN IMMEDIATE` with a 30-second busy
 timeout for writes. The coordinator initializes the database before dispatch.
 Failures are recorded in the same attempts table that feeds the nightly digest.
+Any database change added to the worker path must go through `State.tx()`
+to acquire the SQLite writer lock before the transaction touches any data.
 
 Each worker writes pi's model and settings files to its own agent directory
 using the model configured for the current task. Podman cleanup filters by the

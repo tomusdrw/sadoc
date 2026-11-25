@@ -69,7 +69,7 @@ def run_command(tmp_path, monkeypatch, capsys):
     workdir = tmp_path / "work"
     agent_dir = tmp_path / "agent"
 
-    def run(repos, *, settings="[run]\nworkers = 2", dry_run=False, max_prs=None):
+    def run(repos, *, settings="[run]\nworkers = 2", dry_run=False, max_prs=None, deadline=None):
         entries = [{"owner": "o", "name": name, "repo": f"o/{name}"} for name in repos]
         monkeypatch.setattr(cli.detect, "resolve_scope", lambda *_: entries)
 
@@ -111,6 +111,7 @@ def run_command(tmp_path, monkeypatch, capsys):
                 "run",
                 "--json",
                 *([] if max_prs is None else ["--max-prs", str(max_prs)]),
+                *([] if deadline is None else ["--deadline", str(deadline)]),
             ],
         )
         rc = cli.main()
@@ -260,6 +261,29 @@ def test_pool_records_an_overlap_lookup_failure(run_command, monkeypatch):
     Worker.process_repo.assert_not_called()
     with closing(State(db)) as state:
         assert "GitHub lookup timed out" in report.build(state)
+
+
+def test_pool_finishes_active_groups_after_deadline(run_command, monkeypatch):
+    run, _, _, _ = run_command
+    expired = Event()
+    both_started = Barrier(2, action=expired.set, timeout=5)
+    clock = Mock()
+    clock.time.side_effect = lambda: 11 if expired.is_set() else 10
+    monkeypatch.setattr(cli, "time", clock)
+
+    def process(worker, owner, repo, tier, updates, **kwargs):
+        assert repo in ("a", "b")
+        both_started.wait()
+        return JobResult(repo=f"{owner}/{repo}", tier=tier, status="skipped")
+
+    monkeypatch.setattr(Worker, "process_repo", process)
+    rc, logs, results = run({"a": ["one"], "b": ["one"], "c": ["one"]}, deadline=11)
+    assert rc == 0
+    assert [(r["repo"], r["status"]) for r in results] == [
+        ("o/a", "skipped"),
+        ("o/b", "skipped"),
+    ]
+    assert "past the deadline for tonight, stopping" in logs
 
 
 def test_one_worker_uses_legacy_order_and_logs(run_command, monkeypatch):

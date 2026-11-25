@@ -384,13 +384,21 @@ options that matter most:
 ### Parallel nightly updates
 
 Keep `workers = 1` while rolling out `reasoning_effort` and `[timeouts]`. Measure
-their effect for one or two nights before trying `[run] workers = 2`.
+their effect for one or two nights before enabling the pool in
+`~/.sadoc/config.toml`:
+
+```toml
+[run]
+workers = 2
+require_slots = true
+```
 
 For parallel inference, configure llama-server with at least as many slots as
 workers (`--parallel` / `-np`). Check the context available per slot when sizing
 the server. Sadoc reads the `total_slots` field from `/props` and logs a warning
 for insufficient or unknown capacity. Set `require_slots = true` to make that
 check mandatory. Server configuration and restarts are managed separately.
+Set `workers = 1` to return to sequential execution.
 
 Workers take the highest-priority available group from the existing queue, with
 one active group per repository. The pool shares the configured PR budget,
