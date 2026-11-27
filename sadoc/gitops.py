@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from .sanitize import strip_terminal_sequences
+
 
 class GitError(RuntimeError):
     pass
@@ -106,7 +108,9 @@ class Git:
             **({"env": env} if env is not None else {}),
         )
         if check and proc.returncode != 0:
-            raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:1500]}")
+            output = strip_terminal_sequences(proc.stderr or proc.stdout).strip()
+            detail = f": {output[-4000:]}" if output else ""
+            raise GitError(f"git {' '.join(args)} failed (exit {proc.returncode}){detail}")
         return proc.stdout
 
     # -------------------------------------------------------------- setup
@@ -317,7 +321,9 @@ class Git:
 
     # -------------------------------------------------------------- push
     def push(self, branch: str, force: bool = False) -> str:
-        args = ["push", "--set-upstream", "origin", branch]
+        # Sadoc verifies in its build environment. Checkout hooks would run
+        # outside that environment, with access to the orchestrator's Git auth.
+        args = ["push", "--no-verify", "--set-upstream", "origin", branch]
         if force:
             args.insert(1, "--force-with-lease")
         return self._run(*args, timeout=600, network=True)

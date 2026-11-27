@@ -16,6 +16,12 @@ from __future__ import annotations
 
 import re
 
+
+def strip_terminal_sequences(text: str) -> str:
+    """Remove terminal controls such as colors and hyperlinks from logs."""
+    return re.sub(r"\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)|\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+
+
 # (pattern, marker name for reporting, replacement used when scrubbing).
 #
 # Phrases come first: removing a whole clause reads far better than replacing a

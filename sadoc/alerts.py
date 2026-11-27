@@ -13,6 +13,7 @@ import time
 from . import email_template as et
 from .email_template import Block
 from .persona import Persona
+from .sanitize import strip_terminal_sequences
 
 # Alert kinds
 PR_OPENED = "pr_opened"
@@ -403,6 +404,7 @@ def merged_by_human(
 
 def failure(repo: str, stage: str, detail: str, persona: Persona | None = None) -> Alert:
     p = persona or Persona()
+    detail = strip_terminal_sequences(detail).strip()
     blocks = _rows(
         ("Repository", repo),
         ("Stage", stage),

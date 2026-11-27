@@ -440,4 +440,6 @@ def fingerprint(
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "recipe-v4:" + hashlib.sha256(payload.encode()).hexdigest()
+    # Re-discover recipes created before VERIFY explicitly covered local CI
+    # and pre-push checks.
+    return "recipe-v5:" + hashlib.sha256(payload.encode()).hexdigest()
