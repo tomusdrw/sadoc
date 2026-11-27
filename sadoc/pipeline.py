@@ -1461,19 +1461,30 @@ class Worker:
         toolchains.protect(git.path, plans, self._toolchain_paths(git))
         toolchains.apply(git.path, plans)
         git.stage_all()
-        pinned_tree = git._run("write-tree").strip()
         lock_paths = sorted({path for plan in plans for path in plan["lockfiles"]})
         if lock_paths:
+            self._refresh_toolchain_lockfiles(git, updates, session_factory, lock_paths)
+        self._validate_toolchains(git, updates)
+        if sanitize.scan_diff(git._run("diff", "HEAD")):
+            raise PiError("toolchain update contains internal tooling references")
+        git.commit(self.commit_message(TIER_A, updates, ""))
+
+    def _refresh_toolchain_lockfiles(
+        self, git: Git, updates: list[Update], session_factory, lock_paths: list[str]
+    ) -> None:
+        pinned_tree = git._run("write-tree").strip()
+        prompt = load_prompt(
+            "toolchains",
+            TARGETS=render_update_list(updates),
+            LOCKFILES="\n".join(lock_paths),
+        )
+        for attempt in range(2):
             session = session_factory()
             try:
                 session.start()
                 self._prompt(
                     session,
-                    load_prompt(
-                        "toolchains",
-                        TARGETS=render_update_list(updates),
-                        LOCKFILES="\n".join(lock_paths),
-                    ),
+                    prompt,
                     timeout=DEFAULT_PROMPT_WALL_CLOCK,
                     idle_timeout=DEFAULT_PROMPT_INACTIVITY,
                 )
@@ -1481,18 +1492,31 @@ class Worker:
                 session.close()
             if git._run("write-tree").strip() != pinned_tree:
                 raise PiError("toolchain preparation modified the pinned index")
-            extra = set(git._run("diff", "--name-only", "-z").split("\0")) - set(lock_paths) - {""}
-            extra |= set(
+            tracked_extra = (
+                set(git._run("diff", "--name-only", "-z").split("\0")) - set(lock_paths) - {""}
+            )
+            untracked = set(
                 git._run("ls-files", "--others", "--exclude-standard", "-z").split("\0")
             ) - {""}
-            if extra:
+            extra = tracked_extra | untracked
+            if not extra:
+                return
+            if (
+                attempt
+                or tracked_extra
+                or any(Path(path).name not in {"mise.toml", ".mise.toml"} for path in untracked)
+            ):
                 raise PiError(
                     f"toolchain preparation edited unexpected files: {', '.join(sorted(extra))}"
                 )
-        self._validate_toolchains(git, updates)
-        if sanitize.scan_diff(git._run("diff", "HEAD")):
-            raise PiError("toolchain update contains internal tooling references")
-        git.commit(self.commit_message(TIER_A, updates, ""))
+            # Discard the first refresh as it may have used the generated config.
+            git._run("--literal-pathspecs", "clean", "-f", "--", *sorted(untracked))
+            git._run("--literal-pathspecs", "restore", "--worktree", "--", *lock_paths)
+            prompt += (
+                "\nThe previous attempt created a mise config. The generated file and lockfile "
+                "edits have been removed. Refresh again using the planned versions via a "
+                "one-off command that leaves the checkout configuration untouched.\n"
+            )
 
     # ------------------------------------------------------------ process
     def process_repo(
