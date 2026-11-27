@@ -33,6 +33,7 @@ from . import (
     detect,
     doctor,
     persona,
+    registry,
     release_check,
     sanitize,
     toolchains,
@@ -1613,12 +1614,21 @@ class Worker:
                     impact = None
                     if breaking_updates and not is_toolchain:
                         assessment_head = git.commit_sha()
+                        action_ranges = dict.fromkeys(
+                            (u.name, u.current, u.latest)
+                            for u in breaking_updates
+                            if u.ecosystem == "action" and self.cfg.allow_network
+                        )
+                        release_evidence = [
+                            registry.action_release_evidence(*pins) for pins in action_ranges
+                        ]
                         assessment = self._prompt(
                             session,
                             load_prompt(
                                 "impact",
                                 UPDATES=render_updates(breaking_updates),
                                 NETWORK="enabled" if self.cfg.allow_network else "disabled",
+                                ACTION_RELEASES=json.dumps(release_evidence, ensure_ascii=False),
                             ),
                             timeout=7200,
                             idle_timeout=DEFAULT_PROMPT_INACTIVITY,

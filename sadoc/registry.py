@@ -11,8 +11,11 @@ import re
 import time
 import urllib.error
 import urllib.request
+from http.client import HTTPException
 from pathlib import Path
+from urllib.parse import quote
 
+from . import semver
 from .config import HOME
 
 # Registry lookups, cached so a re-scan does not re-question the registry.
@@ -55,10 +58,15 @@ def _cache_put(ecosystem: str, name: str, value) -> None:
         pass
 
 
-def _fetch(url: str, timeout: int = 20, headers: dict | None = None) -> bytes:
+def _fetch(
+    url: str, timeout: int = 20, headers: dict | None = None, *, max_bytes: int | None = None
+) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        data = resp.read() if max_bytes is None else resp.read(max_bytes + 1)
+        if max_bytes is not None and len(data) > max_bytes:
+            raise RegistryError("registry response exceeds the size limit")
+        return data
 
 
 # ------------------------------------------------------------------ crates
@@ -167,6 +175,102 @@ def action_latest(action: str, gh=None) -> str | None:
     if version:
         _cache_put("action", action, version)
     return version
+
+
+def action_release_evidence(action: str, current: str | None, target: str) -> dict:
+    """Fetch bounded, anonymous release evidence for the already-selected action pins."""
+    warnings: list[str] = []
+    notes: list[dict] = []
+    evidence = {
+        "action": action,
+        "from": current,
+        "to": target,
+        "coverage_limits": warnings,
+        "releases": notes,
+    }
+    repo = "/".join(action.split("/")[:2])
+    old, new = semver.parse(current), semver.parse(target)
+    if (
+        not re.fullmatch(r"[A-Za-z0-9-]+/(?!\.{1,2}$)[A-Za-z0-9_.-]+", repo)
+        or old is None
+        or new is None
+    ):
+        warnings.append("The upstream repository or version range could not be established.")
+        return evidence
+
+    moving_old = bool(re.fullmatch(r"v?\d+", old.raw))
+    moving_new = bool(re.fullmatch(r"v?\d+", new.raw))
+    if moving_old or moving_new:
+        warnings.append(
+            "For moving major pins, the exact commits are unknown. The lookup starts at the "
+            "next major line after a moving source pin and considers any stable release in "
+            "the target major line for a moving target pin."
+        )
+
+    page_size = 100
+    try:
+        raw = _fetch(
+            f"https://api.github.com/repos/{repo}/releases?per_page={page_size}",
+            timeout=10,
+            max_bytes=2 * 1024 * 1024,
+        )
+        releases = json.loads(raw)
+    except (OSError, HTTPException, RegistryError, ValueError):
+        releases = None
+    if not isinstance(releases, list):
+        warnings.append("Public GitHub release lookup failed.")
+        return evidence
+    if len(releases) >= page_size:
+        warnings.append("Only the first page of published GitHub releases was fetched.")
+
+    candidates = []
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+            continue
+        tag = release.get("tag_name")
+        version = semver.parse(tag) if isinstance(tag, str) and len(tag) <= 128 else None
+        if version is None or version.is_prerelease:
+            continue
+        after_old = version.major > old.major if moving_old else semver.compare(version, old) > 0
+        through_new = (
+            version.major <= new.major
+            if moving_new
+            else version.raw == new.raw or semver.compare(version, new) < 0
+        )
+        if after_old and through_new:
+            body = release.get("body")
+            candidates.append((version, body.strip() if isinstance(body, str) else ""))
+
+    candidates.sort(key=lambda row: (row[0].major, row[0].minor, row[0].patch))
+    if not candidates:
+        warnings.append("No published stable release notes were found in the requested range.")
+        return evidence
+    newest = candidates[-1][0]
+    target_found = newest.major == new.major if moving_new else newest.raw == new.raw
+    if not target_found:
+        warnings.append("Published release notes for the target pin were not found.")
+
+    # Prioritize the first release in each breaking line and the newest in-range release.
+    breaking = []
+    other = []
+    previous = old.raw
+    for version, body in candidates[:-1]:
+        entries = breaking if semver.classify(previous, version.raw) == "major" else other
+        entries.append((version, body))
+        previous = version.raw
+    if len(candidates) > 8:
+        warnings.append("Only up to eight in-range releases are included.")
+    selected = [candidates[-1], *breaking, *reversed(other)]
+    for version, body in selected[:8]:
+        note = {
+            "tag": version.raw,
+            "url": f"https://github.com/{repo}/releases/tag/{quote(version.raw, safe='')}",
+            "body": body[:2400],
+        }
+        if len(body) > 2400:
+            note["excerpted"] = True
+        notes.append(note)
+    return evidence
 
 
 # ------------------------------------------------------------------ docker
