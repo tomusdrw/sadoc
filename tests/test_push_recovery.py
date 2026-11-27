@@ -30,6 +30,30 @@ REJECTED = (
 )
 
 
+def test_sadoc_push_skips_checkout_pre_push_hook(tmp_path):
+    remote = Git(tmp_path)
+    remote._run("init", "--bare", "remote.git")
+    remote = Git(tmp_path / "remote.git")
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git = Git(checkout)
+    git._run("init", "-b", "main")
+    git._run("config", "user.name", "Test")
+    git._run("config", "user.email", "test@example.com")
+    git._run("commit", "--allow-empty", "-m", "initial")
+    git._run("remote", "add", "origin", remote.path.as_uri())
+    git._run("config", "core.hooksPath", ".githooks")
+    hook = checkout / ".githooks" / "pre-push"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\necho 'unexpected pre-push hook' >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+    git.push("main")
+
+    assert remote.commit_sha("refs/heads/main") == git.commit_sha()
+
+
 def update(name="widget", current="1.0.0", latest="1.1.0"):
     return Update(
         repo="o/r",

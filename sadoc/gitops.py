@@ -317,7 +317,9 @@ class Git:
 
     # -------------------------------------------------------------- push
     def push(self, branch: str, force: bool = False) -> str:
-        args = ["push", "--set-upstream", "origin", branch]
+        # Sadoc verifies in its build environment. Checkout hooks would run
+        # outside that environment, with access to the orchestrator's Git auth.
+        args = ["push", "--no-verify", "--set-upstream", "origin", branch]
         if force:
             args.insert(1, "--force-with-lease")
         return self._run(*args, timeout=600, network=True)
