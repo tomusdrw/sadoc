@@ -162,6 +162,13 @@ def test_a_changed_workflow_changes_the_recipe(repo):
     assert fingerprint(repo) != before
 
 
+def test_project_pre_push_checks_are_recipe_inputs(repo):
+    repo.write({".githooks/pre-push": "#!/bin/sh\nnpm test\n"})
+    before = fingerprint(repo)
+    repo.write({".githooks/pre-push": "#!/bin/sh\nnpm run qa && npm test\n"})
+    assert fingerprint(repo) != before
+
+
 def test_a_cargo_version_bump_keeps_the_recipe(repo):
     repo.write({"Cargo.toml": CARGO_TOML})
     before = fingerprint(repo)
@@ -242,7 +249,7 @@ def test_application_source_does_not_change_the_recipe(repo):
 
 def test_the_fingerprint_has_a_version_of_its_own(repo):
     repo.write({"package.json": json.dumps(PACKAGE_JSON)})
-    assert fingerprint(repo).startswith("recipe-v4:")
+    assert fingerprint(repo).startswith("recipe-v5:")
 
 
 def test_the_sandbox_policy_is_part_of_the_fingerprint(repo):

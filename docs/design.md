@@ -469,7 +469,7 @@ settled final result rather than rejecting the first failed attempt. Truncation,
 empty replies and timeouts must remain actionable errors, not `VERIFY: NONE`.
 
 `repo_setup` stores recipes under `owner/repository`. `buildcache.py` computes a
-`recipe-v4` fingerprint from committed input paths, file modes and content, plus
+`recipe-v5` fingerprint from committed input paths, file modes and content, plus
 the sandbox network policy. It always includes conventional manifests,
 lockfiles, toolchain/hidden configuration, CI, README/contributor documentation,
 shell scripts, and scripts/tools/config directories. Enumerating the current tree

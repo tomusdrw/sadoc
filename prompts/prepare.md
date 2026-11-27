@@ -4,9 +4,9 @@ Do not assume that a particular script, command name, manifest, or CI system exi
 ## Discover the project
 
 Read the README, contributor documentation, manifests, lockfiles, toolchain files,
-scripts and CI configuration. Inspect nested packages and workspaces too. Infer
-how this project is actually built and tested from these sources. Prefer its own
-scripts when available; otherwise invoke the appropriate toolchain directly.
+scripts, repository-managed Git hooks and CI configuration. Inspect nested packages
+and workspaces too. Infer how the project is built and tested from these sources.
+Prefer project scripts when available. Otherwise invoke the toolchain directly.
 Absence of `build`, `test`, `make`, or CI configuration is not itself a blocker.
 Do not invent a successful check such as `true` to stand in for verification.
 
@@ -18,8 +18,11 @@ versions in the project; do not choose dependency upgrades or modify manifests.
 Separate local checks from deployment, publication and production smoke tests.
 Never deploy, publish, mutate production data or contact a live production service.
 Do not request production credentials. Record such checks under CI_ONLY, with the
-reason they cannot run locally. Run every applicable local build/test check; do not
-silently omit a failing local test or label it CI-only to get a passing result.
+reason they cannot run locally. Include the local equivalents of required CI and
+pre-push checks in VERIFY, including build, lint, format checks and tests. Run the
+underlying verification commands directly. Do not run Git hooks or publishing
+commands. Do not silently omit a failing local check or label it CI-only to get a
+passing result.
 
 ## Stay within the discovery budget
 

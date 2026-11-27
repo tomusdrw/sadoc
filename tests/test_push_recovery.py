@@ -17,6 +17,7 @@ import pytest
 from sadoc import semver
 from sadoc.config import Config
 from sadoc.detect import Update
+from sadoc.gh import GhError
 from sadoc.gitops import Git, GitError
 from sadoc.pipeline import PrGroup, Worker
 from sadoc.piworker import TurnResult
@@ -52,6 +53,25 @@ def test_sadoc_push_skips_checkout_pre_push_hook(tmp_path):
     git.push("main")
 
     assert remote.commit_sha("refs/heads/main") == git.commit_sha()
+
+
+def test_git_error_keeps_the_fatal_diagnostic_after_verbose_output(tmp_path):
+    git = Git(tmp_path)
+    git._run("init")
+    git._run(
+        "config",
+        "alias.fail",
+        "!printf '\\033[0mnotice%.0s' $(seq 300) >&2; "
+        "printf '\\n\\033]8;;file:///path\\033\\\\build.sh\\033]8;;\\033\\\\: "
+        "\\033[31mwasm-pvm: command not found\\033[0m\\n' >&2; exit 127",
+    )
+
+    with pytest.raises(GitError) as error:
+        git._run("fail")
+
+    assert "exit 127" in str(error.value)
+    assert str(error.value).endswith("build.sh: wasm-pvm: command not found")
+    assert "\x1b" not in str(error.value)
 
 
 def update(name="widget", current="1.0.0", latest="1.1.0"):
@@ -192,6 +212,37 @@ def test_a_push_failure_that_is_not_a_rejection_is_not_retried(project):
     assert result.status == "failed"
     project.git.has_remote_branch.assert_not_called()
     project.gh.open_pr.assert_not_called()
+
+
+def test_push_failure_alert_identifies_publication_and_retains_error(project):
+    project.git.push.side_effect = GitError(
+        "git push failed: " + "\x1b[0minformational output\n" * 800 + "remote: permission denied"
+    )
+    project.worker.notify = Mock()
+
+    result = project.run()
+
+    assert result.status == "failed"
+    assert result.detail.startswith("push failed")
+    assert project.session.events == ["bump", "prnote"]
+    alert = project.worker.notify.call_args.args[0]
+    stage, output = alert.failure_context
+    assert stage == "push"
+    assert output.endswith("remote: permission denied")
+    assert "\x1b" not in output
+    assert "Traceback" not in alert.text
+
+
+def test_pr_creation_failure_alert_identifies_publication(project):
+    project.gh.open_pr.side_effect = GhError("HTTP 403: Resource not accessible")
+    project.worker.notify = Mock()
+
+    result = project.run()
+
+    assert result.status == "failed"
+    project.git.push.assert_called_once_with(BRANCH)
+    alert = project.worker.notify.call_args.args[0]
+    assert alert.failure_context == ("pull request creation", "HTTP 403: Resource not accessible")
 
 
 def _toolchain_group(project):
