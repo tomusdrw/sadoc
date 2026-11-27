@@ -237,6 +237,12 @@ The next bump turn restores normal editing access. A post-assessment HEAD and
 dirty-file check still fails closed, recording the changed paths and commits
 locally if the invariant is violated.
 
+When `sandbox.allow_network` permits it, the orchestrator fetches public GitHub
+Action release notes and supplies them as untrusted evidence for the assessment.
+The shell policy scans command text for runtime names, so a GitHub URL containing
+`docker/` can trigger the same restriction as a Docker command. Fetching notes
+from GitHub's API keeps that restriction in effect and requires no credential.
+
 The PR includes a separate **Major-version impact (before changes)** section with
 source links, affected files/symbols, migration needs, and validation gaps. This is
 retained even when tests pass. Subsequent migration fixes are described separately

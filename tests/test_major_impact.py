@@ -4,10 +4,11 @@ import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.error import URLError
 
 import pytest
 
-from sadoc import sanitize, semver
+from sadoc import registry, sanitize, semver
 from sadoc.config import Config, ModelSpec, load
 from sadoc.detect import Update
 from sadoc.gitops import Git
@@ -154,6 +155,52 @@ def test_breaking_updates_are_assessed_before_bump_and_published(project, tier, 
     assert ASSESSMENT.strip() in project.state.pr_details("o/r", 7)["agent_notes"]
     assert current in project.session.prompts["impact"]
     assert latest in project.session.prompts["impact"]
+
+
+@pytest.mark.parametrize("network, available", [(True, True), (True, False), (False, False)])
+def test_docker_action_release_notes_reach_read_only_assessment(
+    project, monkeypatch, network, available
+):
+    project.worker.cfg.allow_network = network
+    action = update("docker/build-push-action", "v5", "v7")
+    action.ecosystem = action.kind = "action"
+    releases = [
+        ("v8.0.0", "Unrelated future version"),
+        ("v7.2.0", "Target-line patch"),
+        ("v7.0.0", "New target runtime"),
+        ("v6.1.0", "Intermediate minor release"),
+        ("v6.0.0", "Intermediate breaking change"),
+        ("v5.3.0", "Old major line"),
+    ]
+    fetch = Mock(
+        return_value=json.dumps([{"tag_name": tag, "body": body} for tag, body in releases]),
+        side_effect=None if available else URLError("unavailable"),
+    )
+    monkeypatch.setattr(registry, "_fetch", fetch)
+
+    result = project.run("B", [action])
+
+    assert result.status == "pr_opened", result.detail
+    assert project.session.prompts["impact_options"]["read_only"]
+    prompt = project.session.prompts["impact"]
+    if network:
+        assert fetch.call_count == 1
+        url = fetch.call_args.args[0]
+        assert url.startswith("https://api.github.com/repos/docker/build-push-action/releases?")
+    else:
+        fetch.assert_not_called()
+    if available:
+        assert "Intermediate breaking change" in prompt
+        assert "New target runtime" in prompt
+        assert "Target-line patch" in prompt
+        assert "https://github.com/docker/build-push-action/releases/tag/v6.0.0" in prompt
+        assert "Unrelated future version" not in prompt
+        assert "Old major line" not in prompt
+        assert "moving major pins" in prompt
+    elif network:
+        assert "Public GitHub release lookup failed" in prompt
+    else:
+        assert "Network access is disabled" in prompt
 
 
 def test_configured_budgets_reach_update_and_note_sessions(project, tmp_path):
