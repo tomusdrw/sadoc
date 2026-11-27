@@ -1478,6 +1478,7 @@ class Worker:
             TARGETS=render_update_list(updates),
             LOCKFILES="\n".join(lock_paths),
         )
+        mise_files = {"mise.toml", ".mise.toml", "mise.lock"}
         for attempt in range(2):
             session = session_factory()
             try:
@@ -1504,7 +1505,7 @@ class Worker:
             if (
                 attempt
                 or tracked_extra
-                or any(Path(path).name not in {"mise.toml", ".mise.toml"} for path in untracked)
+                or any(Path(path).name not in mise_files for path in untracked)
             ):
                 raise PiError(
                     f"toolchain preparation edited unexpected files: {', '.join(sorted(extra))}"
@@ -1513,8 +1514,8 @@ class Worker:
             git._run("--literal-pathspecs", "clean", "-f", "--", *sorted(untracked))
             git._run("--literal-pathspecs", "restore", "--worktree", "--", *lock_paths)
             prompt += (
-                "\nThe previous attempt created a mise config. The generated file and lockfile "
-                "edits have been removed. Refresh again using the planned versions via a "
+                "\nThe previous attempt generated mise files. Those files and the dependency "
+                "lockfile edits have been removed. Refresh again using the planned versions via a "
                 "one-off command that leaves the checkout configuration untouched.\n"
             )
 

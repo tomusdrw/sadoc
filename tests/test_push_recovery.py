@@ -242,7 +242,16 @@ def test_partial_toolchain_update_never_pushes(project):
 
 
 @pytest.mark.parametrize(
-    "side_effect", ["generated", "recreated", "tracked", "staged", "unrelated"]
+    "side_effect",
+    [
+        "generated",
+        "generated_with_lock",
+        "recreated",
+        "tracked",
+        "tracked_lock",
+        "staged",
+        "unrelated",
+    ],
 )
 def test_toolchain_preparation_retries_only_generated_mise_config(
     project, monkeypatch, side_effect
@@ -251,10 +260,12 @@ def test_toolchain_preparation_retries_only_generated_mise_config(
     original_prompt = project.session.prompt
     root = project.git.path
     config = root / "mise.toml"
+    mise_lock = root / "mise.lock"
     lockfile = root / "yarn.lock"
     original_lock = lockfile.read_text()
-    if side_effect == "tracked":
-        config.write_text("[env]\nTEST = 'original'\n")
+    if side_effect in {"tracked", "tracked_lock"}:
+        tracked = config if side_effect == "tracked" else mise_lock
+        tracked.write_text("[env]\nTEST = 'original'\n")
         project.git.commit("add mise configuration")
 
     refreshes = 0
@@ -266,6 +277,8 @@ def test_toolchain_preparation_retries_only_generated_mise_config(
         refreshes += 1
         if refreshes == 1 or side_effect == "recreated":
             config.write_text('[tools]\nnode = "22.23.3"\n')
+            if side_effect in {"generated_with_lock", "tracked_lock"}:
+                mise_lock.write_text('[[tools.node]]\nversion = "22.23.3"\n')
             lockfile.write_text("first refresh\n")
             if side_effect == "staged":
                 project.git.stage_all()
@@ -273,6 +286,7 @@ def test_toolchain_preparation_retries_only_generated_mise_config(
                 (root / "unexpected.txt").write_text("unexpected\n")
         else:
             assert not config.exists()
+            assert not mise_lock.exists()
             assert lockfile.read_text() == original_lock
             assert '"yarn@4.18.1"' in (root / "package.json").read_text()
             lockfile.write_text("__metadata:\n  version: 10\n")
@@ -281,10 +295,11 @@ def test_toolchain_preparation_retries_only_generated_mise_config(
     monkeypatch.setattr(project.session, "prompt", prompt)
     result = project.worker.process_repo("o", "r", group.tier, group.updates, group=group)
 
-    if side_effect == "generated":
+    if side_effect in {"generated", "generated_with_lock"}:
         assert result.status == "pr_opened", result.detail
         assert refreshes == 2
         assert not config.exists()
+        assert not mise_lock.exists()
         assert project.git._run("show", "HEAD:yarn.lock") == "__metadata:\n  version: 10\n"
         assert set(result.changes) == group.touch
     else:
